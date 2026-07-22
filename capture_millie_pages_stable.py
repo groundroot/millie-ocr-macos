@@ -28,6 +28,12 @@ SLIDER_PAGE_COUNTER = re.compile(
     r"(?:slider|AXSlider|진행바)[^\n]*(?:Value:|value\s*[=:]\s*)(\d+(?:\.\d+)?)",
     re.IGNORECASE,
 )
+SLIDER_RANGE_COUNTER = re.compile(
+    r"(?:slider|AXSlider|진행바)[^\n]*"
+    r"(?:Value:|value\s*[=:]\s*)(\d+(?:\.\d+)?)[^\n]*"
+    r"maximum\s*[=:]\s*(\d+(?:\.\d+)?)",
+    re.IGNORECASE,
+)
 KEY_CODES = {"Left": 123, "Right": 124, "Escape": 53}
 CLOSE_BUTTON = re.compile(
     r"role=AXButton[^\n]*(?:name=닫기|description=닫기)", re.IGNORECASE
@@ -102,8 +108,13 @@ def state_from_result(result: dict) -> State:
             current = int(final_match.group(1))
             total = current
         else:
+            slider_range_match = SLIDER_RANGE_COUNTER.search(tree)
             slider_match = SLIDER_PAGE_COUNTER.search(tree)
-            if slider_match:
+            if slider_range_match:
+                current = max(1, int(round(float(slider_range_match.group(1)))))
+                maximum = int(round(float(slider_range_match.group(2))))
+                total = maximum if maximum >= current and maximum > 1 else 0
+            elif slider_match:
                 current = max(1, int(round(float(slider_match.group(1)))))
                 total = 0
             else:
@@ -414,6 +425,17 @@ def capture_distinct_raw(
             continue
 
         current, total, _ = get_state(args)
+        previous_page = expected_page - 1
+        if current < previous_page:
+            # At burst speed the rendered page can lead Millie's accessibility
+            # slider by several updates.  Wait for the counter to catch up before
+            # treating an identical page as an unexpected jump.
+            lag_refreshes = min(max(8, args.render_confirmations * 3), args.max_refreshes)
+            for lag_attempt in range(lag_refreshes):
+                time.sleep(max(args.retry_seconds, 0.05))
+                current, total, _ = get_state(args)
+                if current >= expected_page:
+                    break
         if current == expected_page and (
             expected_total is None or total == expected_total
         ):
@@ -432,7 +454,6 @@ def capture_distinct_raw(
             )
             return last_hash
 
-        previous_page = expected_page - 1
         if current == previous_page:
             if redeliveries >= 1:
                 if allow_final_page:

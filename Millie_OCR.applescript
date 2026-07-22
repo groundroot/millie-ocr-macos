@@ -97,6 +97,26 @@ on runPermissionSetup(permissionKind)
 	end if
 end runPermissionSetup
 
+on chooseOutputMode()
+	set outputChoices to {"스캔만 — PNG 이미지", "PDF만 — OCR 없는 이미지 PDF", "OCR PDF만 — 검색 가능한 PDF", "Markdown만 — OCR 본문", "모두 만들기 — OCR PDF + Markdown + EPUB"}
+	set selectedMode to choose from list outputChoices with title "밀리 OCR · 결과 선택" with prompt "캡처가 끝난 뒤 만들 결과를 선택하세요." default items {item 5 of outputChoices} OK button name "계속" cancel button name "취소"
+	if selectedMode is false then return missing value
+	set selectedText to item 1 of selectedMode
+	if selectedText starts with "스캔만" then return "scan-only"
+	if selectedText starts with "PDF만" then return "pdf-only"
+	if selectedText starts with "OCR PDF만" then return "ocr-pdf"
+	if selectedText starts with "Markdown만" then return "md-only"
+	return "all"
+end chooseOutputMode
+
+on outputModeLabel(modeCode)
+	if modeCode is "scan-only" then return "스캔 이미지"
+	if modeCode is "pdf-only" then return "OCR 없는 PDF"
+	if modeCode is "ocr-pdf" then return "검색 가능한 OCR PDF"
+	if modeCode is "md-only" then return "Markdown"
+	return "OCR PDF·Markdown·EPUB"
+end outputModeLabel
+
 on run
 	set requestedPermission to my permissionMode()
 	if requestedPermission is not "" then
@@ -104,15 +124,21 @@ on run
 		return "밀리 OCR 권한 확인을 마쳤습니다."
 	end if
 	try
-		set selectedFolder to choose folder with prompt "PDF·Markdown·EPUB 결과를 저장할 폴더를 선택하세요."
+		set selectedFolder to choose folder with prompt "밀리 OCR 결과를 저장할 폴더를 선택하세요."
 	on error number -128
 		return "사용자가 저장 위치 선택을 취소했습니다."
 	end try
+	try
+		set outputMode to my chooseOutputMode()
+	on error number -128
+		return "사용자가 결과 선택을 취소했습니다."
+	end try
+	if outputMode is missing value then return "사용자가 결과 선택을 취소했습니다."
 	set resultRoot to POSIX path of selectedFolder
 	set launchCommand to "/bin/mkdir -p " & quoted form of ((POSIX path of (path to home folder)) & "Library/Logs") & " && " & ¬
-		"/bin/zsh " & quoted form of runnerPath & " --auto run " & quoted form of resultRoot & " >> " & ¬
+		"/bin/zsh " & quoted form of runnerPath & " --auto run " & quoted form of resultRoot & " " & quoted form of outputMode & " >> " & ¬
 		quoted form of logPath & " 2>&1"
-	display notification "선택한 폴더에 고속 캡처와 OCR을 시작했습니다." with title "밀리 OCR"
+	display notification ((my outputModeLabel(outputMode)) & " 작업을 시작했습니다.") with title "밀리 OCR"
 	try
 		with timeout of 604800 seconds
 			do shell script launchCommand
