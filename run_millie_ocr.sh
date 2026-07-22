@@ -59,8 +59,10 @@ if [[ ! -f "$NATIVE_SCRIPT" ]]; then
   NATIVE_SCRIPT="$PACKAGE_DIR/millie_native.applescript"
 fi
 LOCK_DIR="$CACHE_BASE/millie-ocr/active-run.lock"
+LOCK_PID_FILE="$LOCK_DIR/pid"
 STATUS_FILE="${MILLIE_OCR_STATUS_FILE:-$CACHE_BASE/millie-ocr/status.json}"
 STOP_REQUEST_FILE="${STATUS_FILE:h}/stop.request"
+RESUME_FILE="${STATUS_FILE:h}/resume.json"
 DASHBOARD_PORT="${MILLIE_OCR_DASHBOARD_PORT:-8765}"
 DASHBOARD_URL="http://127.0.0.1:${DASHBOARD_PORT}"
 SHORTCUT_LOG="$HOME/Library/Logs/MillieOCRShortcut.log"
@@ -117,14 +119,51 @@ cleanup() {
   fi
   status_update --worker-pid 0
   /bin/rm -f "$STOP_REQUEST_FILE" >/dev/null 2>&1 || true
+  /bin/rm -f "$LOCK_PID_FILE" >/dev/null 2>&1 || true
   /bin/rmdir "$LOCK_DIR" >/dev/null 2>&1 || true
+}
+
+runner_pid_is_alive() {
+  local candidate_pid="$1"
+  local candidate_command
+  [[ "$candidate_pid" == <-> ]] || return 1
+  candidate_command="$(/bin/ps -p "$candidate_pid" -o command= 2>/dev/null)"
+  [[ "$candidate_command" == "/bin/zsh "* && "$candidate_command" == *"run_millie_ocr.sh"* ]]
+}
+
+claim_run_lock() {
+  local existing_runner_pid=""
+  local lock_modified_at=""
+  local now_epoch=""
+  if /bin/mkdir "$LOCK_DIR" 2>/dev/null; then
+    print -r -- "$$" > "$LOCK_PID_FILE"
+    return 0
+  fi
+
+  if [[ -r "$LOCK_PID_FILE" ]]; then
+    existing_runner_pid="$(<"$LOCK_PID_FILE")"
+  else
+    lock_modified_at="$(/usr/bin/stat -f %m "$LOCK_DIR" 2>/dev/null)"
+    now_epoch="$(/bin/date +%s)"
+    if [[ "$lock_modified_at" == <-> && "$now_epoch" == <-> ]] && (( now_epoch - lock_modified_at < 10 )); then
+      return 1
+    fi
+  fi
+  if runner_pid_is_alive "$existing_runner_pid"; then
+    return 1
+  fi
+
+  /bin/rm -f "$LOCK_PID_FILE" >/dev/null 2>&1 || return 1
+  /bin/rmdir "$LOCK_DIR" >/dev/null 2>&1 || return 1
+  /bin/mkdir "$LOCK_DIR" 2>/dev/null || return 1
+  print -r -- "$$" > "$LOCK_PID_FILE"
 }
 
 stop_requested() {
   trap - ERR TERM INT
   status_update \
     --state stopped \
-    --message "사용자가 작업을 중지했습니다." \
+    --message "사용자가 작업을 중지했습니다. 다음 실행에서 저장된 페이지 이후부터 이어갈 수 있습니다." \
     --error ""
   notify "작업을 안전하게 중지했습니다."
   exit 130
@@ -161,7 +200,7 @@ if [[ ! -f "$NATIVE_SCRIPT" ]]; then
 fi
 
 /bin/mkdir -p "$CACHE_BASE/millie-ocr" "$RESULT_ROOT"
-if ! /bin/mkdir "$LOCK_DIR" 2>/dev/null; then
+if ! claim_run_lock; then
   notify "이미 다른 OCR 작업이 실행 중입니다."
   exit 2
 fi
@@ -240,9 +279,48 @@ if [[ "$RUN_MODE" == "--check" ]]; then
 fi
 
 SAFE_TITLE="$($RUNTIME_PYTHON -c 'import re,sys; s=re.sub(r"[\\/:*?\"<>|]+", "_", sys.argv[1]).strip(" ."); print(s or "밀리의서재")' "$BOOK_TITLE")"
-STAMP="$(/bin/date +%Y%m%d_%H%M%S)"
-RUN_DIR="$RESULT_ROOT/${SAFE_TITLE}_${STAMP}"
-IMAGE_DIR="$RUN_DIR/images"
+RESUME_SELECTED=0
+RESUME_LAST_PAGE=0
+RESUME_TOTAL_PAGES=0
+RESUME_PROBE_OUTPUT="$($RUNTIME_PYTHON "$PACKAGE_DIR/resume_state.py" probe --file "$RESUME_FILE" --book-title "$BOOK_TITLE")"
+RESUME_PROBE_LINES=("${(@f)RESUME_PROBE_OUTPUT}")
+if [[ "${RESUME_PROBE_LINES[1]:-0}" == "1" ]]; then
+  RESUME_RUN_DIR="${RESUME_PROBE_LINES[2]}"
+  RESUME_IMAGE_DIR="${RESUME_PROBE_LINES[3]}"
+  RESUME_LAST_PAGE="${RESUME_PROBE_LINES[4]}"
+  RESUME_TOTAL_PAGES="${RESUME_PROBE_LINES[5]}"
+  RESUME_TOTAL_LABEL="$RESUME_TOTAL_PAGES"
+  if [[ "$RESUME_TOTAL_LABEL" == "0" ]]; then
+    RESUME_TOTAL_LABEL="?"
+  fi
+  if ! RESUME_CHOICE="$(/usr/bin/osascript \
+      -e 'on run argv' \
+      -e 'set pageLabel to item 1 of argv & "/" & item 2 of argv & "쪽"' \
+      -e 'set folderLabel to item 3 of argv' \
+      -e 'set answer to display dialog "중단된 스캔 " & pageLabel & "을 발견했습니다." & return & return & "기존 폴더에서 다음 페이지부터 이어서 진행할까요?" & return & folderLabel with title "밀리 OCR · 이어서 작업" buttons {"새로 시작", "이어서 작업"} default button "이어서 작업" with icon note' \
+      -e 'return button returned of answer' \
+      -e 'end run' \
+      "$RESUME_LAST_PAGE" "$RESUME_TOTAL_LABEL" "$RESUME_RUN_DIR" 2>/dev/null)"; then
+    status_update \
+      --state idle \
+      --phase preparing \
+      --message "이어서 작업 선택을 취소했습니다." \
+      --book-title "$BOOK_TITLE"
+    exit 0
+  fi
+  if [[ "$RESUME_CHOICE" == "이어서 작업" ]]; then
+    RESUME_SELECTED=1
+    RUN_DIR="$RESUME_RUN_DIR"
+    IMAGE_DIR="$RESUME_IMAGE_DIR"
+    RESULT_ROOT="${RUN_DIR:h}"
+  fi
+fi
+
+if [[ "$RESUME_SELECTED" == "0" ]]; then
+  STAMP="$(/bin/date +%Y%m%d_%H%M%S)"
+  RUN_DIR="$RESULT_ROOT/${SAFE_TITLE}_${STAMP}"
+  IMAGE_DIR="$RUN_DIR/images"
+fi
 RESULTS_DIR="$RUN_DIR/surya-results"
 PDF_PATH="$RUN_DIR/${SAFE_TITLE}_Surya2_OCR.pdf"
 IMAGE_PDF_PATH="$RUN_DIR/${SAFE_TITLE}_Images.pdf"
@@ -265,11 +343,26 @@ case "$OUTPUT_MODE" in
 esac
 
 /bin/mkdir -p "$IMAGE_DIR" "$RESULTS_DIR" "$VALIDATION_DIR"
-printf 'book=%s\nstarted=%s\napp_pid=%s\nresult_root=%s\noutput_mode=%s\n' "$BOOK_TITLE" "$STAMP" "$APP_PID" "$RESULT_ROOT" "$OUTPUT_MODE" > "$RUN_DIR/run-info.txt"
+if [[ "$RESUME_SELECTED" == "1" ]]; then
+  printf 'resumed=%s\nresume_from=%s\napp_pid=%s\noutput_mode=%s\n' \
+    "$(/bin/date +%Y%m%d_%H%M%S)" "$(( RESUME_LAST_PAGE + 1 ))" "$APP_PID" "$OUTPUT_MODE" >> "$RUN_DIR/run-info.txt"
+  PREPARE_MESSAGE="${BOOK_TITLE}의 기존 ${RESUME_LAST_PAGE}쪽을 확인하고 이어서 작업을 준비합니다."
+else
+  printf 'book=%s\nstarted=%s\napp_pid=%s\nresult_root=%s\noutput_mode=%s\n' "$BOOK_TITLE" "$STAMP" "$APP_PID" "$RESULT_ROOT" "$OUTPUT_MODE" > "$RUN_DIR/run-info.txt"
+  PREPARE_MESSAGE="${BOOK_TITLE}의 첫 페이지로 이동하고 있습니다."
+fi
+"$RUNTIME_PYTHON" "$PACKAGE_DIR/resume_state.py" init \
+  --file "$RESUME_FILE" \
+  --book-title "$BOOK_TITLE" \
+  --output-mode "$OUTPUT_MODE" \
+  --result-root "$RESULT_ROOT" \
+  --run-dir "$RUN_DIR" \
+  --image-dir "$IMAGE_DIR" \
+  --total-pages "$RESUME_TOTAL_PAGES"
 status_update \
   --state running \
   --phase preparing \
-  --message "${BOOK_TITLE}의 첫 페이지로 이동하고 있습니다." \
+  --message "$PREPARE_MESSAGE" \
   --phase-progress 0.9 \
   --book-title "$BOOK_TITLE" \
   --run-dir "$RUN_DIR" \
@@ -277,9 +370,20 @@ status_update \
   --markdown-path "$STATUS_MARKDOWN_PATH" \
   --epub-path "$STATUS_EPUB_PATH" \
   --log-path "$SHORTCUT_LOG"
-notify "페이지 캡처를 시작했습니다."
+if [[ "$RESUME_SELECTED" == "1" ]]; then
+  notify "${RESUME_LAST_PAGE}쪽 다음부터 이어서 작업합니다."
+else
+  notify "페이지 캡처를 시작했습니다."
+fi
 
 CAPTURE_EXTRA=(--app-pid "$APP_PID")
+CAPTURE_EXTRA+=(--resume-file "$RESUME_FILE")
+if [[ "$RESUME_SELECTED" == "1" ]]; then
+  CAPTURE_EXTRA+=(--start-page "$(( RESUME_LAST_PAGE + 1 ))")
+  if [[ "$RESUME_TOTAL_PAGES" -gt 0 ]]; then
+    CAPTURE_EXTRA+=(--expected-total "$RESUME_TOTAL_PAGES")
+  fi
+fi
 if [[ "$RUN_MODE" == "--smoke" ]]; then
   CAPTURE_EXTRA+=(--end-page 1)
 fi
@@ -292,6 +396,7 @@ fi
 
 if [[ "$RUN_MODE" == "--smoke" ]]; then
   status_update --state complete --phase complete --message "캡처 시험을 완료했습니다." --phase-progress 1
+  "$RUNTIME_PYTHON" "$PACKAGE_DIR/resume_state.py" clear --file "$RESUME_FILE"
   printf 'status=smoke-pass\nimage=%s\n' "$IMAGE_DIR/page_0001.png"
   exit 0
 fi
@@ -324,6 +429,7 @@ if [[ "$OUTPUT_MODE" == "scan-only" ]]; then
     --run-dir "$RUN_DIR" \
     --error ""
   /usr/bin/open "$IMAGE_DIR" >/dev/null 2>&1 || true
+  "$RUNTIME_PYTHON" "$PACKAGE_DIR/resume_state.py" clear --file "$RESUME_FILE"
   notify "완료: ${SAFE_TITLE} 스캔 이미지 (${CAPTURED_PAGES}쪽)"
   printf 'output=%s\npages=%s\nmode=%s\n' "$IMAGE_DIR" "$CAPTURED_PAGES" "$OUTPUT_MODE"
   exit 0
@@ -473,5 +579,6 @@ status_update \
   --epub-path "$STATUS_EPUB_PATH" \
   --run-dir "$RUN_DIR" \
   --error ""
+"$RUNTIME_PYTHON" "$PACKAGE_DIR/resume_state.py" clear --file "$RESUME_FILE"
 notify "완료: ${SAFE_TITLE} ${OUTPUT_LABEL} (${FINAL_PAGES}쪽)"
 printf 'output=%s\npdf=%s\nmarkdown=%s\nepub=%s\npages=%s\nhangul=%s\nmode=%s\n' "$RUN_DIR" "$STATUS_PDF_PATH" "$STATUS_MARKDOWN_PATH" "$STATUS_EPUB_PATH" "$FINAL_PAGES" "$HANGUL_COUNT" "$OUTPUT_MODE"

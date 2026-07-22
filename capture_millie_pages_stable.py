@@ -16,6 +16,7 @@ from pathlib import Path
 
 from PIL import Image
 
+from resume_state import scan_contiguous_pages, update_resume
 from status_store import update_status
 
 
@@ -50,6 +51,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--app-pid", type=int)
     parser.add_argument("--cg-window-id", type=int)
     parser.add_argument("--end-page", type=int)
+    parser.add_argument("--start-page", type=int, default=1)
+    parser.add_argument("--expected-total", type=int)
+    parser.add_argument("--resume-file", type=Path)
     parser.add_argument("--target-width", type=int, default=1748)
     parser.add_argument("--target-height", type=int, default=2480)
     parser.add_argument("--trim-ratio", type=float, default=0.025)
@@ -332,6 +336,29 @@ def rewind_and_warm_reader(args: argparse.Namespace) -> State:
     return current, total, title
 
 
+def move_reader_to_page(args: argparse.Namespace, target_page: int) -> State:
+    close_table_of_contents(args)
+    focus_reader(args)
+    current, total, title = get_state(args, restore=True)
+    if target_page < 1 or (total > 0 and target_page > total):
+        raise RuntimeError(
+            f"이어갈 쪽수가 올바르지 않습니다: target={target_page}, total={total or '?'}"
+        )
+    while current != target_page:
+        direction = "Right" if current < target_page else "Left"
+        expected = current + 1 if direction == "Right" else current - 1
+        pressed_state = press_key(args, direction)
+        current, total, title = wait_for_counter(
+            args,
+            expected,
+            expected_total=args.expected_total,
+            initial_state=pressed_state,
+        )
+        if current == target_page or current % 10 == 0:
+            print(f"resume_seek={current}/{total or '?'}", flush=True)
+    return current, total, title
+
+
 def normalize_screenshot(
     source: Path,
     destination: Path,
@@ -587,7 +614,24 @@ def main() -> None:
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    state = rewind_and_warm_reader(args)
+    if args.start_page < 1:
+        raise SystemExit(f"Invalid start page {args.start_page}")
+    existing_pages = scan_contiguous_pages(output_dir)
+    expected_existing = args.start_page - 1
+    if existing_pages != expected_existing:
+        raise RuntimeError(
+            f"이어갈 이미지 구간이 일치하지 않습니다: files=1-{existing_pages or 0}, "
+            f"expected=1-{expected_existing}"
+        )
+
+    navigation_target = args.start_page
+    if args.expected_total and navigation_target > args.expected_total:
+        navigation_target = args.expected_total
+    state = (
+        rewind_and_warm_reader(args)
+        if args.start_page == 1
+        else move_reader_to_page(args, navigation_target)
+    )
     args.cg_window_id = args.cg_window_id or (
         resolve_cg_window_id(args.app_pid) if args.app_pid else None
     )
@@ -600,31 +644,57 @@ def main() -> None:
         flush=True,
     )
     current, total, title = state
-    if current != 1:
-        raise RuntimeError(f"Reader rewind failed; current page is {current}")
+    if current != navigation_target:
+        raise RuntimeError(
+            f"Reader resume seek failed; current page is {current}, expected={navigation_target}"
+        )
     known_total = total if total > 0 else None
+    if args.expected_total:
+        if known_total is not None and known_total != args.expected_total:
+            raise RuntimeError(
+                f"책의 전체 쪽수가 변경되었습니다: previous={args.expected_total}, current={known_total}"
+            )
+        known_total = args.expected_total
     end_page = args.end_page or known_total
     if end_page is not None and end_page < 1:
         raise SystemExit(f"Invalid end page {end_page}")
     if known_total is not None and end_page is not None and end_page > known_total:
         raise SystemExit(f"Invalid end page {end_page}; total={known_total}")
+    if end_page is not None and args.start_page > end_page + 1:
+        raise SystemExit(
+            f"Invalid resume start page {args.start_page}; end={end_page}"
+        )
+
+    if args.resume_file:
+        update_resume(
+            args.resume_file.expanduser(),
+            total_pages=end_page or known_total or 0,
+            last_opened_title=title,
+        )
 
     if args.status_file:
-        initial_message = (
-            f"전체 {end_page}쪽을 확인했습니다. 고속 캡처를 시작합니다."
-            if end_page is not None
-            else "현재 쪽수를 확인했습니다. 마지막 쪽까지 고속 캡처합니다."
-        )
+        if args.start_page > 1:
+            initial_message = (
+                f"기존 {existing_pages}쪽을 확인했습니다. {args.start_page}쪽부터 이어서 캡처합니다."
+                if end_page is None or args.start_page <= end_page
+                else f"기존 {existing_pages}쪽 전체를 확인했습니다. 결과 제작을 이어갑니다."
+            )
+        else:
+            initial_message = (
+                f"전체 {end_page}쪽을 확인했습니다. 고속 캡처를 시작합니다."
+                if end_page is not None
+                else "현재 쪽수를 확인했습니다. 마지막 쪽까지 고속 캡처합니다."
+            )
         update_status(
             args.status_file.expanduser(),
             state="running",
             phase="capture",
             message=initial_message,
             book_title=title,
-            current=0,
+            current=existing_pages,
             total=end_page or 0,
             rate=0.0,
-            phase_progress=0.0 if end_page is not None else None,
+            phase_progress=(existing_pages / end_page) if end_page else None,
         )
 
     manifest = {
@@ -633,6 +703,7 @@ def main() -> None:
         "cg_window_id": args.cg_window_id,
         "title": title,
         "start_page": 1,
+        "resumed_from_page": args.start_page if args.start_page > 1 else None,
         "end_page": end_page,
         "total_pages": known_total,
         "target_size": [args.target_width, args.target_height],
@@ -641,16 +712,22 @@ def main() -> None:
         "pages": [],
     }
     jobs: dict[int, Future[str]] = {}
-    completed_hashes: dict[int, str] = {}
-    output_paths: dict[int, Path] = {}
+    completed_hashes: dict[int, str] = {
+        page: image_hash(output_dir / f"page_{page:04d}.png")
+        for page in range(1, existing_pages + 1)
+    }
+    output_paths: dict[int, Path] = {
+        page: output_dir / f"page_{page:04d}.png"
+        for page in range(1, existing_pages + 1)
+    }
     previous_raw_hash = None
     started = time.perf_counter()
 
     with tempfile.TemporaryDirectory(prefix="millie-fast-capture-") as temporary:
         raw_dir = Path(temporary)
         with ThreadPoolExecutor(max_workers=args.workers) as executor:
-            page = 1
-            while True:
+            page = args.start_page
+            while end_page is None or page <= end_page:
                 audit_interval = max(1, args.counter_audit_interval)
                 if page > 1 and page % audit_interval == 0:
                     # Verify the reader reached this page before taking its image.
@@ -673,8 +750,13 @@ def main() -> None:
                     known_total = end_page
                     manifest["end_page"] = end_page
                     manifest["total_pages"] = end_page
+                    if args.resume_file:
+                        update_resume(
+                            args.resume_file.expanduser(), total_pages=end_page
+                        )
                     if args.status_file:
                         elapsed = max(time.perf_counter() - started, 0.001)
+                        captured_this_run = max(0, end_page - args.start_page + 1)
                         update_status(
                             args.status_file.expanduser(),
                             state="running",
@@ -682,7 +764,7 @@ def main() -> None:
                             message=f"마지막 {end_page}쪽까지 캡처했습니다.",
                             current=end_page,
                             total=end_page,
-                            rate=round(end_page / elapsed, 3),
+                            rate=round(captured_this_run / elapsed, 3),
                             phase_progress=1.0,
                         )
                     break
@@ -694,7 +776,8 @@ def main() -> None:
                 collect_finished_workers(jobs, completed_hashes)
 
                 elapsed = max(time.perf_counter() - started, 0.001)
-                capture_rate = page / elapsed
+                captured_this_run = page - args.start_page + 1
+                capture_rate = captured_this_run / elapsed
                 print(
                     f"captured={page}/{end_page or '?'} rate={capture_rate:.2f}pps "
                     f"file={output_path.name}",
@@ -736,17 +819,24 @@ def main() -> None:
                 )
 
     write_manifest(output_dir / "capture_manifest.json", manifest)
-    final_files = sorted(output_dir.glob("page_*.png"))
-    if len(final_files) != end_page or not (output_dir / f"page_{end_page:04d}.png").is_file():
+    final_pages = scan_contiguous_pages(output_dir)
+    if final_pages != end_page or not (output_dir / f"page_{end_page:04d}.png").is_file():
         raise RuntimeError(
-            f"Capture completeness check failed: files={len(final_files)}, "
+            f"Capture completeness check failed: files={final_pages}, "
             f"expected={end_page}, last=page_{end_page:04d}.png"
         )
+    if args.resume_file:
+        update_resume(
+            args.resume_file.expanduser(),
+            total_pages=end_page,
+            capture_complete=True,
+        )
     elapsed = max(time.perf_counter() - started, 0.001)
+    captured_this_run = max(0, end_page - args.start_page + 1)
     print(f"output_dir={output_dir}")
     print(f"captured_pages={len(manifest['pages'])}")
     print(f"capture_seconds={elapsed:.2f}")
-    print(f"capture_rate={len(manifest['pages']) / elapsed:.2f}pps")
+    print(f"capture_rate={captured_this_run / elapsed:.2f}pps")
 
 
 if __name__ == "__main__":
