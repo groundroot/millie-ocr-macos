@@ -44,6 +44,7 @@ for file in \
   millie_native.applescript \
   Millie_OCR.applescript \
   Millie_OCR_Launcher.applescript \
+  ocr_progress.py \
   Shortcut_Action.applescript \
   bootstrap_macos.sh \
   README.md; do
@@ -65,6 +66,7 @@ done
   "$INSTALL_DIR/install_surya_macos.sh" \
   "$INSTALL_DIR/make_searchable_pdf.py" \
   "$INSTALL_DIR/make_image_pdf.py" \
+  "$INSTALL_DIR/ocr_progress.py" \
   "$INSTALL_DIR/bootstrap_macos.sh"
 
 /usr/bin/osacompile -o "$INSTALL_DIR/millie_native.scpt" "$INSTALL_DIR/millie_native.applescript"
