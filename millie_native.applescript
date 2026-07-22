@@ -19,18 +19,45 @@ on describeElement(elementRef)
 	set nameText to ""
 	set descriptionText to ""
 	set valueText to ""
-	try
-		set roleText to my cleanText(role of elementRef)
-	end try
-	try
-		set nameText to my cleanText(name of elementRef)
-	end try
-	try
-		set descriptionText to my cleanText(description of elementRef)
-	end try
-	try
-		set valueText to my cleanText(value of elementRef)
-	end try
+	tell application "System Events"
+		try
+			set roleText to my cleanText(role of elementRef)
+		end try
+		if roleText is "" then
+			try
+				set roleText to my cleanText(value of attribute "AXRole" of elementRef)
+			end try
+		end if
+		try
+			set nameText to my cleanText(name of elementRef)
+		end try
+		if nameText is "" then
+			try
+				set nameText to my cleanText(value of attribute "AXTitle" of elementRef)
+			end try
+		end if
+		try
+			set descriptionText to my cleanText(description of elementRef)
+		end try
+		if descriptionText is "" then
+			try
+				set descriptionText to my cleanText(value of attribute "AXDescription" of elementRef)
+			end try
+		end if
+		try
+			set valueText to my cleanText(value of elementRef)
+		end try
+		if valueText is "" then
+			try
+				set valueText to my cleanText(value of attribute "AXValue" of elementRef)
+			end try
+		end if
+		if valueText is "" then
+			try
+				set valueText to my cleanText(value of attribute "AXValueDescription" of elementRef)
+			end try
+		end if
+	end tell
 	if roleText is "" and nameText is "" and descriptionText is "" and valueText is "" then return ""
 	return "role=" & roleText & " name=" & nameText & " description=" & descriptionText & " value=" & valueText
 end describeElement
