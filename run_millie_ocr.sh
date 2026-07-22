@@ -5,6 +5,7 @@ export PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 BOOK_TITLE="${1:-}"
 RUN_MODE="${2:-run}"
+REQUESTED_RESULT_ROOT="${3:-}"
 AUTO_TITLE=0
 if [[ -z "$BOOK_TITLE" || "$BOOK_TITLE" == "--auto" ]]; then
   AUTO_TITLE=1
@@ -23,9 +24,23 @@ else
 fi
 ENGINE_PYTHON="$ENGINE_ROOT/surya-venv/bin/python"
 SURYA_BIN="$ENGINE_ROOT/surya-venv/bin/surya_ocr"
-RUNTIME_PYTHON="${MILLIE_OCR_PYTHON:-$(command -v python3 || true)}"
-ORCA_BIN="${MILLIE_OCR_ORCA_BIN:-$(command -v orca || true)}"
+RUNTIME_PYTHON="${MILLIE_OCR_PYTHON:-}"
+if [[ -z "$RUNTIME_PYTHON" ]]; then
+  for candidate in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
+    if [[ -x "$candidate" ]] && "$candidate" -c 'import json, pathlib' >/dev/null 2>&1; then
+      RUNTIME_PYTHON="$candidate"
+      break
+    fi
+  done
+fi
 RESULT_ROOT="${MILLIE_OCR_RESULT_ROOT:-$HOME/Documents/Codex/OCR Results}"
+if [[ -n "$REQUESTED_RESULT_ROOT" ]]; then
+  RESULT_ROOT="$REQUESTED_RESULT_ROOT"
+fi
+NATIVE_SCRIPT="$PACKAGE_DIR/millie_native.scpt"
+if [[ ! -f "$NATIVE_SCRIPT" ]]; then
+  NATIVE_SCRIPT="$PACKAGE_DIR/millie_native.applescript"
+fi
 LOCK_DIR="$CACHE_BASE/millie-ocr/active-run.lock"
 STATUS_FILE="${MILLIE_OCR_STATUS_FILE:-$CACHE_BASE/millie-ocr/status.json}"
 DASHBOARD_PORT="${MILLIE_OCR_DASHBOARD_PORT:-8765}"
@@ -100,15 +115,15 @@ if [[ -z "$RUNTIME_PYTHON" || ! -x "$RUNTIME_PYTHON" ]]; then
   exit 10
 fi
 launch_dashboard
-if [[ -z "$ORCA_BIN" || ! -x "$ORCA_BIN" ]]; then
+if [[ ! -f "$NATIVE_SCRIPT" ]]; then
   status_update \
     --reset \
     --state error \
     --phase preparing \
-    --message "Orca 앱과 CLI가 필요합니다." \
+    --message "밀리 OCR 창 제어 파일을 찾지 못했습니다." \
     --log-path "$SHORTCUT_LOG" \
-    --error "Orca를 설치한 뒤 다시 실행해 주세요."
-  notify "Orca 앱과 CLI가 필요합니다. 먼저 설치 안내를 확인해 주세요."
+    --error "설치 명령을 다시 실행해 주세요."
+  notify "밀리 OCR을 다시 설치해 주세요."
   exit 11
 fi
 
@@ -129,7 +144,7 @@ status_update \
   --book-title "$BOOK_TITLE" \
   --log-path "$SHORTCUT_LOG"
 
-printf '[%s] launch mode=%s requested_book=%s\n' "$(/bin/date '+%Y-%m-%d %H:%M:%S')" "$RUN_MODE" "$BOOK_TITLE"
+printf '[%s] launch mode=%s requested_book=%s result_root=%s\n' "$(/bin/date '+%Y-%m-%d %H:%M:%S')" "$RUN_MODE" "$BOOK_TITLE" "$RESULT_ROOT"
 
 /usr/bin/caffeinate -dimsu -w $$ &
 CAFFEINATE_PID=$!
@@ -146,20 +161,22 @@ fi
 /bin/sleep 0.5
 status_update --phase preparing --message "밀리의 서재에서 열린 책과 쪽수를 확인하고 있습니다." --phase-progress 0.5
 
-WINDOW_JSON="$($ORCA_BIN computer list-windows --app kr.co.millie.MillieShelf --json)"
-WINDOW_ID="$(printf '%s' "$WINDOW_JSON" | "$RUNTIME_PYTHON" -c 'import json,sys; d=json.load(sys.stdin); w=d.get("result",{}).get("windows",[]); print(w[0]["id"] if w else "")')"
-APP_PID="$(printf '%s' "$WINDOW_JSON" | "$RUNTIME_PYTHON" -c 'import json,sys; d=json.load(sys.stdin); print(d.get("result",{}).get("app",{}).get("pid", ""))')"
-if [[ -z "$WINDOW_ID" ]]; then
+if ! NATIVE_STATE="$(/usr/bin/osascript "$NATIVE_SCRIPT" state kr.co.millie.MillieShelf 2>&1)"; then
   status_update \
     --state error \
     --phase preparing \
-    --message "밀리의 서재에서 열린 책을 찾지 못했습니다." \
-    --error "책을 한 페이지 보기로 연 뒤 다시 실행해 주세요."
-  notify "밀리의 서재에서 책을 한 페이지로 열어 주세요."
+    --message "밀리의서재 창을 확인하지 못했습니다." \
+    --error "$NATIVE_STATE"
+  notify "밀리의서재에서 책을 열고 손쉬운 사용 권한을 확인해 주세요."
   exit 3
 fi
-
-WINDOW_TITLE="$(printf '%s' "$WINDOW_JSON" | "$RUNTIME_PYTHON" -c 'import json,sys; w=json.load(sys.stdin).get("result",{}).get("windows",[])[0]; print(w.get("title", ""))')"
+APP_PID="$(printf '%s\n' "$NATIVE_STATE" | /usr/bin/sed -n '1p')"
+WINDOW_TITLE="$(printf '%s\n' "$NATIVE_STATE" | /usr/bin/sed -n '2p')"
+if [[ -z "$APP_PID" || "$APP_PID" != <-> ]]; then
+  status_update --state error --phase preparing --message "밀리의서재 창 정보를 읽지 못했습니다." --error "$NATIVE_STATE"
+  notify "밀리의서재에서 책을 한 페이지로 열어 주세요."
+  exit 3
+fi
 
 if [[ "$AUTO_TITLE" == "1" ]]; then
   BOOK_TITLE="$WINDOW_TITLE"
@@ -171,7 +188,7 @@ if [[ "$RUN_MODE" == "--check" ]]; then
     --phase preparing \
     --message "실행 준비가 완료되어 있습니다." \
     --book-title "$BOOK_TITLE"
-  printf 'status=ready\nbook=%s\nwindow_id=%s\nengine=%s\n' "$BOOK_TITLE" "$WINDOW_ID" "$ENGINE_PYTHON"
+  printf 'status=ready\nbook=%s\napp_pid=%s\nresult_root=%s\nengine=%s\n' "$BOOK_TITLE" "$APP_PID" "$RESULT_ROOT" "$ENGINE_PYTHON"
   exit 0
 fi
 
@@ -186,7 +203,7 @@ EPUB_PATH="$RUN_DIR/${SAFE_TITLE}_extracted.epub"
 VALIDATION_DIR="$RUN_DIR/validation"
 
 /bin/mkdir -p "$IMAGE_DIR" "$RESULTS_DIR" "$VALIDATION_DIR"
-printf 'book=%s\nstarted=%s\nwindow_id=%s\n' "$BOOK_TITLE" "$STAMP" "$WINDOW_ID" > "$RUN_DIR/run-info.txt"
+printf 'book=%s\nstarted=%s\napp_pid=%s\nresult_root=%s\n' "$BOOK_TITLE" "$STAMP" "$APP_PID" "$RESULT_ROOT" > "$RUN_DIR/run-info.txt"
 status_update \
   --state running \
   --phase preparing \
@@ -200,18 +217,14 @@ status_update \
   --log-path "$SHORTCUT_LOG"
 notify "페이지 캡처를 시작했습니다."
 
-CAPTURE_EXTRA=()
-if [[ -n "$APP_PID" ]]; then
-  CAPTURE_EXTRA+=(--app-pid "$APP_PID")
-fi
+CAPTURE_EXTRA=(--app-pid "$APP_PID")
 if [[ "$RUN_MODE" == "--smoke" ]]; then
   CAPTURE_EXTRA+=(--end-page 1)
 fi
 
 "$ENGINE_PYTHON" "$PACKAGE_DIR/capture_millie_pages_stable.py" \
   "$IMAGE_DIR" \
-  --window-id "$WINDOW_ID" \
-  --orca-bin "$ORCA_BIN" \
+  --native-script "$NATIVE_SCRIPT" \
   --status-file "$STATUS_FILE" \
   "${CAPTURE_EXTRA[@]}"
 
