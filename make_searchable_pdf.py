@@ -33,7 +33,7 @@ def parse_args() -> argparse.Namespace:
         description="Run Surya Korean OCR and add an invisible Unicode text layer to ordered page images."
     )
     parser.add_argument("input_dir", type=Path)
-    parser.add_argument("output_pdf", type=Path)
+    parser.add_argument("output_pdf", type=Path, nargs="?")
     parser.add_argument("--surya-bin", type=Path)
     parser.add_argument("--results-json", type=Path)
     parser.add_argument("--results-dir", type=Path)
@@ -41,6 +41,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--font", type=Path)
     parser.add_argument("--backend", default="llamacpp")
     parser.add_argument("--status-file", type=Path)
+    parser.add_argument(
+        "--text-output",
+        type=Path,
+        help="Write page-separated OCR text for Markdown or EPUB generation.",
+    )
+    parser.add_argument(
+        "--skip-pdf",
+        action="store_true",
+        help="Run OCR and write text/results without creating a PDF.",
+    )
     return parser.parse_args()
 
 
@@ -85,6 +95,25 @@ def plain_text(fragment: str) -> str:
     fragment = re.sub(r"<[^>]+>", "", fragment)
     lines = [re.sub(r"\s+", " ", line).strip() for line in html.unescape(fragment).splitlines()]
     return re.sub(r"\s+", " ", " ".join(line for line in lines if line)).strip()
+
+
+def write_page_text(data: dict, images: list[Path], output_path: Path) -> int:
+    pages: list[str] = []
+    hangul = 0
+    for image_path in images:
+        page_result = data.get(image_path.stem, [{}])[0]
+        blocks: list[str] = []
+        for block in page_result.get("blocks", []):
+            if block.get("skipped") or block.get("error") or not block.get("html"):
+                continue
+            text = plain_text(block["html"])
+            if text:
+                blocks.append(text)
+                hangul += len(re.findall(r"[가-힣]", text))
+        pages.append("\n\n".join(blocks))
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text("\f".join(pages) + "\f", encoding="utf-8")
+    return hangul
 
 
 def run_surya(args: argparse.Namespace, input_dir: Path, results_root: Path) -> Path:
@@ -218,8 +247,13 @@ def build_pdf(args: argparse.Namespace, images: list[Path], results_json: Path, 
 
 def main() -> None:
     args = parse_args()
+    if args.skip_pdf and args.text_output is None:
+        raise SystemExit("--skip-pdf requires --text-output")
+    if not args.skip_pdf and args.output_pdf is None:
+        raise SystemExit("output_pdf is required unless --skip-pdf is used")
     input_dir = args.input_dir.resolve()
-    args.output_pdf = args.output_pdf.resolve()
+    if args.output_pdf is not None:
+        args.output_pdf = args.output_pdf.resolve()
     images = resolve_images(input_dir)
 
     with tempfile.TemporaryDirectory(prefix="surya-korean-ocr-") as temporary:
@@ -230,7 +264,18 @@ def main() -> None:
             results_root = args.results_dir.resolve() if args.results_dir else temporary_path / "surya-results"
             results_root.mkdir(parents=True, exist_ok=True)
             results_json = run_surya(args, input_dir, results_root)
-        build_pdf(args, images, results_json, temporary_path)
+        data = json.loads(results_json.read_text(encoding="utf-8"))
+        missing = [path.stem for path in images if path.stem not in data]
+        if missing:
+            raise SystemExit(
+                f"Surya results are missing image keys: {', '.join(missing)}"
+            )
+        if args.text_output is not None:
+            hangul = write_page_text(data, images, args.text_output.resolve())
+            print(f"text_output={args.text_output.resolve()}")
+            print(f"text_hangul_chars={hangul}")
+        if not args.skip_pdf:
+            build_pdf(args, images, results_json, temporary_path)
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
   <title>밀리 OCR 작업실</title>
   <style>
     :root {
@@ -227,7 +228,8 @@
       padding-left: 28px;
       display: flex;
       flex-direction: column;
-      justify-content: space-between;
+      justify-content: flex-start;
+      gap: 28px;
       position: relative;
       z-index: 1;
     }
@@ -271,6 +273,18 @@
       height: 0;
       background: var(--accent);
       transition: height .65s cubic-bezier(.2,.8,.2,1);
+    }
+
+    .progress-track.indeterminate .progress-fill {
+      top: -35%;
+      bottom: auto;
+      height: 35%;
+      animation: scan-progress-vertical 1.25s ease-in-out infinite;
+    }
+
+    @keyframes scan-progress-vertical {
+      from { top: -35%; }
+      to { top: 100%; }
     }
 
     .percent {
@@ -387,6 +401,11 @@
     .phase-step.done .phase-step-fill { background: var(--green); }
     .phase-step.active { color: var(--ink); }
     .phase-step.active .phase-step-fill { background: var(--accent); }
+    .phase-step.indeterminate .phase-step-fill {
+      width: 35% !important;
+      position: relative;
+      animation: scan-progress-horizontal 1.25s ease-in-out infinite;
+    }
 
     .actions {
       display: grid;
@@ -566,13 +585,19 @@
       .masthead { align-items: flex-start; }
       .clock { display: none; }
       .hero { grid-template-columns: 1fr; min-height: auto; padding: 28px 24px; }
-      .folio { grid-column: 1; grid-row: auto; border-left: 0; border-top: 1px solid var(--line); padding: 22px 0 0; flex-direction: row; align-items: flex-end; }
+      .folio { grid-column: 1; grid-row: auto; border-left: 0; border-top: 1px solid var(--line); padding: 22px 0 0; flex-direction: row; align-items: flex-end; justify-content: space-between; gap: 20px; }
       .progress-track { width: 120px; height: 2px; margin: 0; }
       .progress-fill { height: 100% !important; width: 0; bottom: auto; transition: width .65s; }
+      .progress-track.indeterminate .progress-fill { top: 0; left: -35%; width: 35%; animation-name: scan-progress-horizontal; }
       .metrics { grid-column: 1; }
       .metric strong { font-size: 19px; }
       .actions { grid-template-columns: 1fr; }
       .footnote { display: block; }
+    }
+
+    @keyframes scan-progress-horizontal {
+      from { left: -35%; }
+      to { left: 100%; }
     }
 
     @media (prefers-reduced-motion: reduce) {
@@ -672,7 +697,7 @@
   </dialog>
 
   <script>
-    const phases = [
+    const allPhases = [
       ["preparing", "준비"],
       ["capture", "캡처"],
       ["ocr", "OCR"],
@@ -682,8 +707,15 @@
       ["validation", "검증"],
       ["complete", "완료"]
     ];
-    const phaseNames = Object.fromEntries(phases);
-    const phaseWeights = {preparing: 0, capture: 5, ocr: 42, pdf: 84, markdown: 90, epub: 94, validation: 97, complete: 100};
+    const phaseNames = Object.fromEntries(allPhases);
+    const phaseSets = {
+      "scan-only": ["preparing", "capture", "complete"],
+      "pdf-only": ["preparing", "capture", "pdf", "validation", "complete"],
+      "ocr-pdf": ["preparing", "capture", "ocr", "pdf", "validation", "complete"],
+      "md-only": ["preparing", "capture", "ocr", "markdown", "validation", "complete"],
+      "all": allPhases.map(([key]) => key)
+    };
+    const phaseWeights = {preparing: 5, capture: 35, ocr: 45, pdf: 6, markdown: 4, epub: 3, validation: 2, complete: 0};
     let latestStatus = null;
     let lastFetch = Date.now();
     let stopRequestPending = false;
@@ -706,17 +738,29 @@
         : `${String(minutes).padStart(2,"0")}:${String(secs).padStart(2,"0")}`;
     }
 
-    function overallPercent(status) {
+    function activePhases(status) {
+      const keys = phaseSets[status.output_mode] || phaseSets.all;
+      return keys.map(key => [key, phaseNames[key]]);
+    }
+
+    function currentPhaseProgress(status, phase) {
+      if (phase === "capture" && status.total > 0) {
+        return Math.max(0, Math.min(1, status.current / status.total));
+      }
+      if (typeof status.phase_progress === "number") {
+        return Math.max(0, Math.min(1, status.phase_progress));
+      }
+      return 0;
+    }
+
+    function overallPercent(status, phases) {
       if (status.state === "complete") return 100;
       const phase = status.phase || "preparing";
-      if (phase === "capture" && status.total > 0) return 5 + (status.current / status.total) * 36;
-      if (typeof status.phase_progress === "number") {
-        const start = phaseWeights[phase] ?? 0;
-        const nextIndex = Math.min(phases.length - 1, phases.findIndex(([key]) => key === phase) + 1);
-        const end = phaseWeights[phases[nextIndex][0]] ?? start;
-        return start + (end - start) * Math.max(0, Math.min(1, status.phase_progress));
-      }
-      return phaseWeights[phase] ?? 0;
+      const currentIndex = Math.max(0, phases.findIndex(([key]) => key === phase));
+      const totalWeight = phases.reduce((sum, [key]) => sum + (phaseWeights[key] || 0), 0) || 1;
+      const finishedWeight = phases.slice(0, currentIndex).reduce((sum, [key]) => sum + (phaseWeights[key] || 0), 0);
+      const activeWeight = phaseWeights[phase] || 0;
+      return (finishedWeight + activeWeight * currentPhaseProgress(status, phase)) / totalWeight * 100;
     }
 
     function phasePercent(status, key, index, currentIndex) {
@@ -731,12 +775,16 @@
       return key === "complete" ? 100 : 0;
     }
 
-    function renderPhases(status) {
+    function renderPhases(status, phases) {
       const currentIndex = Math.max(0, phases.findIndex(([key]) => key === status.phase));
       $("phaseList").innerHTML = phases.map(([key, label], index) => {
         const cls = index < currentIndex ? "done" : index === currentIndex ? "active" : "";
         const value = phasePercent(status, key, index, currentIndex);
-        return `<div class="phase-step ${cls}" role="progressbar" aria-label="${label} 진행률" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${value}"><div class="phase-step-head"><span>${label}</span><span class="phase-step-percent">${value}%</span></div><span class="phase-mark"><span class="phase-step-fill" style="width:${value}%"></span></span></div>`;
+        const unknownCapture = key === "capture" && index === currentIndex && !(status.total > 0);
+        const stateClass = unknownCapture ? `${cls} indeterminate` : cls;
+        const ariaValue = unknownCapture ? "" : ` aria-valuenow="${value}"`;
+        const valueLabel = unknownCapture ? "진행 중" : `${value}%`;
+        return `<div class="phase-step ${stateClass}" role="progressbar" aria-label="${label} 진행률" aria-valuemin="0" aria-valuemax="100"${ariaValue}><div class="phase-step-head"><span>${label}</span><span class="phase-step-percent">${valueLabel}</span></div><span class="phase-mark"><span class="phase-step-fill" style="width:${value}%"></span></span></div>`;
       }).join("");
     }
 
@@ -764,7 +812,9 @@
     function render(status) {
       latestStatus = status;
       const phase = status.phase || "preparing";
-      const percent = Math.round(Math.max(0, Math.min(100, overallPercent(status))));
+      const phases = activePhases(status);
+      const percent = Math.round(Math.max(0, Math.min(100, overallPercent(status, phases))));
+      const indeterminateCapture = status.state === "running" && phase === "capture" && !(status.total > 0);
       const started = parseDate(status.started_at);
       const updated = parseDate(status.updated_at);
       const elapsedSeconds = started ? (Date.now() - started.getTime()) / 1000 : 0;
@@ -781,9 +831,16 @@
       $("message").textContent = status.message || "상태를 확인하고 있습니다.";
       $("stateText").textContent = status.state === "complete" ? "완료" : status.state === "error" ? "오류" : status.state === "stopped" ? "사용자 중지" : status.state === "stopping" ? "중지 중" : status.state === "running" ? "진행 중" : "대기";
       $("currentPage").textContent = status.current > 0 ? status.current.toLocaleString("ko-KR") : "—";
-      $("totalPages").textContent = status.total > 0 ? `전체 ${status.total.toLocaleString("ko-KR")}쪽` : "전체 쪽수 확인 전";
-      $("percent").textContent = `${percent}%`;
-      $("progressTrack").setAttribute("aria-valuenow", String(percent));
+      const capturePercent = status.total > 0 ? Math.round(Math.max(0, Math.min(100, status.current / status.total * 100))) : null;
+      $("totalPages").textContent = phase === "capture" && capturePercent !== null
+        ? `전체 ${status.total.toLocaleString("ko-KR")}쪽 · 스캔 ${capturePercent}%`
+        : phase === "capture" && status.current > 0
+          ? `${status.current.toLocaleString("ko-KR")}쪽 스캔 · 전체 쪽수 확인 중`
+          : status.total > 0 ? `전체 ${status.total.toLocaleString("ko-KR")}쪽` : "전체 쪽수 확인 전";
+      $("percent").textContent = indeterminateCapture ? "쪽수 확인 중" : `${percent}%`;
+      $("progressTrack").classList.toggle("indeterminate", indeterminateCapture);
+      if (indeterminateCapture) $("progressTrack").removeAttribute("aria-valuenow");
+      else $("progressTrack").setAttribute("aria-valuenow", String(percent));
       $("progressFill").style.height = `${percent}%`;
       $("progressFill").style.width = `${percent}%`;
       $("rate").textContent = status.rate > 0 ? `${Number(status.rate).toFixed(2)} 쪽/초` : phase === "ocr" ? "분석 중" : "—";
@@ -794,11 +851,12 @@
 
       const paths = {folder: status.run_dir, pdf: status.pdf_path, markdown: status.markdown_path, epub: status.epub_path, log: status.log_path};
       document.querySelectorAll(".action").forEach(button => button.disabled = !paths[button.dataset.target]);
+      document.querySelector('[data-target="pdf"] small').textContent = status.output_mode === "pdf-only" ? "OCR 없는 이미지 문서" : "검색 가능한 문서";
       const canStop = status.state === "running" && !stopRequestPending;
       $("stopJob").disabled = !canStop;
       $("stopLabel").textContent = status.state === "stopping" || stopRequestPending ? "중지 요청 중" : "작업 중지";
       $("stopHint").textContent = status.state === "running" ? "현재 작업을 안전하게 종료합니다" : status.state === "stopping" ? "처리 중인 프로세스를 종료하고 있습니다" : "작업 중에만 사용할 수 있습니다";
-      renderPhases(status);
+      renderPhases(status, phases);
       renderTimeline(status);
     }
 

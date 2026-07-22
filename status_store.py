@@ -29,9 +29,10 @@ def now_iso() -> str:
 
 def default_status() -> dict[str, Any]:
     return {
-        "schema_version": 3,
+        "schema_version": 4,
         "state": "idle",
         "phase": "preparing",
+        "output_mode": "all",
         "message": "새 OCR 작업을 기다리고 있습니다.",
         "book_title": "",
         "current": 0,
@@ -58,6 +59,7 @@ def load_status(path: Path) -> dict[str, Any]:
         payload = default_status()
     base = default_status()
     base.update(payload)
+    base["schema_version"] = default_status()["schema_version"]
     if not isinstance(base.get("history"), list):
         base["history"] = []
     return base
@@ -124,6 +126,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--reset", action="store_true")
     parser.add_argument("--state")
     parser.add_argument("--phase", choices=PHASES)
+    parser.add_argument(
+        "--output-mode",
+        choices=("scan-only", "pdf-only", "ocr-pdf", "md-only", "all"),
+    )
     parser.add_argument("--message")
     parser.add_argument("--book-title")
     parser.add_argument("--current", type=int)
@@ -146,6 +152,7 @@ def main() -> None:
     changes = {
         "state": args.state,
         "phase": args.phase,
+        "output_mode": args.output_mode,
         "message": args.message,
         "book_title": args.book_title,
         "current": args.current,

@@ -89,6 +89,21 @@ on counterValue(elementRef)
 	return valueText
 end counterValue
 
+on counterMaximum(elementRef)
+	set maximumText to ""
+	tell application "System Events"
+		try
+			set maximumText to my cleanText(value of attribute "AXMaxValue" of elementRef)
+		end try
+		if maximumText is "" then
+			try
+				set maximumText to my cleanText(maximum value of elementRef)
+			end try
+		end if
+	end tell
+	return maximumText
+end counterMaximum
+
 on counterSnapshot(processRef)
 	tell application "System Events"
 		if (count of windows of processRef) is 0 then error "밀리의서재에서 열린 책 창을 찾지 못했습니다."
@@ -107,7 +122,8 @@ on counterSnapshot(processRef)
 			else if nameText contains "진행바" then
 				set valueText to my counterValue(elementRef)
 				if valueText is not "" then
-					set end of outputLines to "role=AXSlider name=" & nameText & " description= value=" & valueText
+					set maximumText to my counterMaximum(elementRef)
+					set end of outputLines to "role=AXSlider name=" & nameText & " description= value=" & valueText & " maximum=" & maximumText
 				end if
 			end if
 		end repeat

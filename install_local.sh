@@ -39,6 +39,7 @@ for file in \
   text_to_epub.py \
   install_surya_macos.sh \
   make_searchable_pdf.py \
+  make_image_pdf.py \
   millie_native.applescript \
   Millie_OCR.applescript \
   Shortcut_Action.applescript \
@@ -60,6 +61,7 @@ done
   "$INSTALL_DIR/text_to_epub.py" \
   "$INSTALL_DIR/install_surya_macos.sh" \
   "$INSTALL_DIR/make_searchable_pdf.py" \
+  "$INSTALL_DIR/make_image_pdf.py" \
   "$INSTALL_DIR/bootstrap_macos.sh"
 
 /usr/bin/osacompile -o "$INSTALL_DIR/millie_native.scpt" "$INSTALL_DIR/millie_native.applescript"
