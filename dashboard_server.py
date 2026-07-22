@@ -16,7 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from status_store import load_status, update_status
+from status_store import default_status, load_status, update_status, write_status
 
 
 def process_command(pid: int) -> str:
@@ -203,9 +203,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
-        if parsed.path != "/api/stop":
+        if parsed.path not in {"/api/stop", "/api/reset"}:
             self.send_json({"ok": False, "error": "Not found"}, HTTPStatus.NOT_FOUND)
             return
+
+        action = "stop" if parsed.path == "/api/stop" else "reset"
 
         expected_origins = {
             f"http://127.0.0.1:{self.server.server_port}",
@@ -216,13 +218,51 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_json({"ok": False, "error": "허용되지 않은 요청입니다."}, HTTPStatus.FORBIDDEN)
             return
         if (
-            self.headers.get("X-Millie-OCR") != "stop"
+            self.headers.get("X-Millie-OCR") != action
             or not self.headers.get("Content-Type", "").startswith("application/json")
         ):
-            self.send_json({"ok": False, "error": "중지 요청을 확인할 수 없습니다."}, HTTPStatus.BAD_REQUEST)
+            message = (
+                "중지 요청을 확인할 수 없습니다."
+                if action == "stop"
+                else "리셋 요청을 확인할 수 없습니다."
+            )
+            self.send_json({"ok": False, "error": message}, HTTPStatus.BAD_REQUEST)
             return
 
         status_payload = load_status(self.server.status_file)
+        if action == "reset":
+            if status_payload.get("state") != "stopped":
+                self.send_json(
+                    {"ok": False, "error": "작업을 중지한 뒤에만 페이지를 리셋할 수 있습니다."},
+                    HTTPStatus.CONFLICT,
+                )
+                return
+            try:
+                worker_pid = int(status_payload.get("worker_pid") or 0)
+            except (TypeError, ValueError):
+                worker_pid = 0
+            if find_runner_pid(worker_pid):
+                self.send_json(
+                    {"ok": False, "error": "작업 프로세스가 아직 종료되지 않았습니다."},
+                    HTTPStatus.CONFLICT,
+                )
+                return
+            stop_request = self.server.status_file.with_name("stop.request")
+            try:
+                stop_request.unlink(missing_ok=True)
+            except OSError as error:
+                self.send_json(
+                    {"ok": False, "error": str(error)},
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+                return
+            reset_payload = default_status()
+            write_status(self.server.status_file, reset_payload)
+            self.send_json(
+                {"ok": True, "message": "페이지를 초기화했습니다.", "status": reset_payload}
+            )
+            return
+
         if status_payload.get("state") == "stopping":
             self.send_json({"ok": True, "message": "이미 작업을 중지하고 있습니다."})
             return
