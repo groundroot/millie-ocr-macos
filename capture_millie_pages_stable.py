@@ -53,6 +53,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--retry-seconds", type=float, default=0.02)
     parser.add_argument("--max-refreshes", type=int, default=80)
     parser.add_argument("--reader-ready-seconds", type=float, default=8.0)
+    parser.add_argument("--counter-audit-interval", type=int, default=10)
+    parser.add_argument("--render-confirmations", type=int, default=3)
     parser.add_argument("--workers", type=int, default=min(4, max(2, os.cpu_count() or 2)))
     return parser.parse_args()
 
@@ -125,6 +127,14 @@ def activate_reader(bundle_id: str) -> None:
     )
 
 
+def transient_reader_error(error: RuntimeError) -> bool:
+    detail = str(error)
+    return any(
+        marker in detail
+        for marker in ("열린 책 창", "실행 중", "-1728", "가져올 수 없습니다")
+    )
+
+
 def resolve_cg_window_id(app_pid: int) -> int | None:
     """Resolve the real CoreGraphics window id instead of reusing an AX id."""
     script = f'''ObjC.import("CoreGraphics");
@@ -172,7 +182,7 @@ def get_state_result(args: argparse.Namespace, restore: bool = False) -> dict:
             return run_native(args, "focus" if restore or attempt > 0 else "state")
         except RuntimeError as error:
             last_error = error
-            if "열린 책 창" not in str(error) and "실행 중" not in str(error):
+            if not transient_reader_error(error):
                 raise
             activate_reader(args.app)
             time.sleep(args.retry_seconds)
@@ -218,9 +228,25 @@ def press_key(args: argparse.Namespace, key: str) -> State:
                 return get_state(args, restore=attempt > 0)
         except RuntimeError as error:
             last_error = error
-            if "열린 책 창" not in str(error) and "실행 중" not in str(error):
+            if not transient_reader_error(error):
                 raise
     raise RuntimeError(f"Reader could not retain keyboard focus: {last_error}")
+
+
+def press_key_fast(args: argparse.Namespace, key: str) -> None:
+    """Deliver exactly one key without the expensive accessibility-tree read."""
+    last_error: RuntimeError | None = None
+    for attempt in range(3):
+        try:
+            run_native(args, "press-fast", key)
+            return
+        except RuntimeError as error:
+            last_error = error
+            if not transient_reader_error(error):
+                raise
+            activate_reader(args.app)
+            time.sleep(max(args.retry_seconds, 0.05) * (attempt + 1))
+    raise RuntimeError(f"Reader remained unavailable during fast key delivery: {last_error}")
 
 
 def focus_reader(args: argparse.Namespace) -> None:
@@ -259,52 +285,6 @@ def wait_for_counter(
     raise RuntimeError(
         f"Reader did not reach the expected counter {expected}; last seen={last_seen}"
     )
-
-
-def advance_without_known_total(
-    args: argparse.Namespace,
-    current_page: int,
-) -> State | None:
-    """Advance a slider-only reader, returning None after two verified stalls."""
-    expected = current_page + 1
-    last_seen: tuple[int, int] | None = None
-    for delivery in range(2):
-        if delivery:
-            activate_reader(args.app)
-            time.sleep(0.12)
-        initial_result = run_native(args, "press", "Right")
-
-        for attempt in range(args.max_refreshes):
-            result = initial_result if attempt == 0 else get_state_result(
-                args, restore=delivery > 0
-            )
-            try:
-                state = state_from_result(result)
-            except RuntimeError as error:
-                if "page counter was not found" not in str(error):
-                    raise
-                time.sleep(args.retry_seconds)
-                continue
-
-            observed_page, observed_total, _ = state
-            last_seen = (observed_page, observed_total)
-            if observed_page == expected:
-                return state
-            if observed_page > expected:
-                raise RuntimeError(
-                    f"Reader skipped a page: expected {expected}, observed {observed_page}"
-                )
-            if observed_page < current_page:
-                raise RuntimeError(
-                    f"Reader moved backwards: current {current_page}, observed {observed_page}"
-                )
-            time.sleep(args.retry_seconds)
-
-    print(
-        f"final_page_detected={current_page} last_seen={last_seen} verified_stalls=2",
-        flush=True,
-    )
-    return None
 
 
 def rewind_and_warm_reader(args: argparse.Namespace) -> State:
@@ -410,8 +390,10 @@ def capture_distinct_raw(
     expected_page: int,
     expected_total: int | None,
     previous_raw_hash: str | None,
-) -> str:
+    allow_final_page: bool = False,
+) -> str | None:
     last_hash = None
+    redeliveries = 0
     for attempt in range(args.max_refreshes):
         observed_state = capture_raw(args, raw_path)
         if observed_state is not None:
@@ -426,18 +408,78 @@ def capture_distinct_raw(
         last_hash = image_hash(raw_path)
         if previous_raw_hash is None or last_hash != previous_raw_hash:
             return last_hash
-        if attempt == 1:
-            current, total, _ = get_state(args)
-            if current != expected_page or (
-                expected_total is not None and total != expected_total
-            ):
+
+        if attempt < 1:
+            time.sleep(args.retry_seconds)
+            continue
+
+        current, total, _ = get_state(args)
+        if current == expected_page and (
+            expected_total is None or total == expected_total
+        ):
+            # The counter moved but Millie may still be painting the page. Give
+            # it a few short capture cycles, then accept a genuinely identical
+            # blank/divider page instead of waiting for a change that cannot occur.
+            for _ in range(max(1, args.render_confirmations)):
+                time.sleep(args.retry_seconds)
+                capture_raw(args, raw_path)
+                last_hash = image_hash(raw_path)
+                if last_hash != previous_raw_hash:
+                    return last_hash
+            print(
+                f"identical_page_confirmed={expected_page} counter={current}/{total or '?'}",
+                flush=True,
+            )
+            return last_hash
+
+        previous_page = expected_page - 1
+        if current == previous_page:
+            if redeliveries >= 1:
+                if allow_final_page:
+                    print(
+                        f"final_page_detected={previous_page} verified_stalls=2",
+                        flush=True,
+                    )
+                    return None
                 raise RuntimeError(
-                    f"Reader moved unexpectedly during capture: {current}/{total or '?'}"
+                    f"Reader did not advance from page {previous_page} after two key deliveries"
                 )
-        time.sleep(args.retry_seconds)
+            press_key_fast(args, "Right")
+            redeliveries += 1
+            time.sleep(args.retry_seconds)
+            continue
+
+        raise RuntimeError(
+            f"Reader moved unexpectedly during capture: {current}/{total or '?'}; "
+            f"expected {expected_page}/{expected_total or '?'}"
+        )
     raise RuntimeError(
         f"Page {expected_page} remained identical to the previous page after "
         f"{args.max_refreshes} refreshes (hash={last_hash})"
+    )
+
+
+def audit_counter(
+    args: argparse.Namespace, expected_page: int, expected_total: int | None
+) -> None:
+    last_seen: tuple[int, int] | None = None
+    for attempt in range(3):
+        current, total, _ = get_state(args)
+        last_seen = (current, total)
+        if current == expected_page and (
+            expected_total is None or total == expected_total
+        ):
+            return
+        if current > expected_page or (
+            expected_total is not None and total not in {0, expected_total}
+        ):
+            break
+        if attempt < 2:
+            time.sleep(max(args.retry_seconds, 0.05))
+    observed_page, observed_total = last_seen or (0, 0)
+    raise RuntimeError(
+        f"Counter audit failed: observed {observed_page}/{observed_total or '?'}, "
+        f"expected {expected_page}/{expected_total or '?'}"
     )
 
 
@@ -487,7 +529,8 @@ def main() -> None:
         raise RuntimeError("밀리의서재의 화면 캡처 창 번호를 확인하지 못했습니다.")
     print(
         f"app_pid={args.app_pid} core_graphics_window={args.cg_window_id} "
-        "capture_backend=core-graphics-fast accessibility=counter-only-fast",
+        f"capture_backend=core-graphics-fast accessibility=verified-burst-"
+        f"{max(1, args.counter_audit_interval)}",
         flush=True,
     )
     current, total, title = state
@@ -527,7 +570,8 @@ def main() -> None:
         "end_page": end_page,
         "total_pages": known_total,
         "target_size": [args.target_width, args.target_height],
-        "capture_mode": "core-graphics-fast",
+        "capture_mode": "core-graphics-verified-burst",
+        "counter_audit_interval": max(1, args.counter_audit_interval),
         "pages": [],
     }
     jobs: dict[int, Future[str]] = {}
@@ -541,24 +585,39 @@ def main() -> None:
         with ThreadPoolExecutor(max_workers=args.workers) as executor:
             page = 1
             while True:
-                current, observed_total, title = state
-                if current != page or (
-                    known_total is not None and observed_total != known_total
-                ):
-                    raise RuntimeError(
-                        f"Unexpected reader state {current}/{observed_total or '?'}; "
-                        f"expected {page}/{known_total or '?'}"
-                    )
-
                 raw_path = raw_dir / f"raw_{page:04d}.{args.raw_format}"
                 output_path = output_dir / f"page_{page:04d}.png"
-                previous_raw_hash = capture_distinct_raw(
+                captured_hash = capture_distinct_raw(
                     args,
                     raw_path,
                     page,
                     known_total,
                     previous_raw_hash,
+                    allow_final_page=known_total is None and page > 1,
                 )
+                if captured_hash is None:
+                    end_page = page - 1
+                    known_total = end_page
+                    manifest["end_page"] = end_page
+                    manifest["total_pages"] = end_page
+                    if args.status_file:
+                        elapsed = max(time.perf_counter() - started, 0.001)
+                        update_status(
+                            args.status_file.expanduser(),
+                            state="running",
+                            phase="capture",
+                            message=f"마지막 {end_page}쪽까지 캡처했습니다.",
+                            current=end_page,
+                            total=end_page,
+                            rate=round(end_page / elapsed, 3),
+                            phase_progress=1.0,
+                        )
+                    break
+                previous_raw_hash = captured_hash
+
+                audit_interval = max(1, args.counter_audit_interval)
+                if page > 1 and page % audit_interval == 0:
+                    audit_counter(args, page, known_total)
                 output_paths[page] = output_path
                 jobs[page] = executor.submit(
                     normalize_and_hash, raw_path, output_path, args
@@ -588,31 +647,7 @@ def main() -> None:
                 if end_page is not None and page >= end_page:
                     break
 
-                if known_total is not None:
-                    pressed_state = press_key(args, "Right")
-                    state = wait_for_counter(
-                        args, page + 1, known_total, initial_state=pressed_state
-                    )
-                else:
-                    next_state = advance_without_known_total(args, page)
-                    if next_state is None:
-                        end_page = page
-                        known_total = page
-                        manifest["end_page"] = end_page
-                        manifest["total_pages"] = end_page
-                        if args.status_file:
-                            update_status(
-                                args.status_file.expanduser(),
-                                state="running",
-                                phase="capture",
-                                message=f"마지막 {end_page}쪽까지 캡처했습니다.",
-                                current=end_page,
-                                total=end_page,
-                                rate=round(capture_rate, 3),
-                                phase_progress=1.0,
-                            )
-                        break
-                    state = next_state
+                press_key_fast(args, "Right")
                 page += 1
 
             if end_page is None:
