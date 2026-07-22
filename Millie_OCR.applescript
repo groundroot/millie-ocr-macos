@@ -9,9 +9,16 @@ on run
 	end try
 	set resultRoot to POSIX path of selectedFolder
 	set launchCommand to "/bin/mkdir -p " & quoted form of ((POSIX path of (path to home folder)) & "Library/Logs") & " && " & ¬
-		"/usr/bin/nohup /bin/zsh " & quoted form of runnerPath & " --auto run " & quoted form of resultRoot & " >> " & ¬
-		quoted form of logPath & " 2>&1 </dev/null &"
-	do shell script launchCommand
+		"/bin/zsh " & quoted form of runnerPath & " --auto run " & quoted form of resultRoot & " >> " & ¬
+		quoted form of logPath & " 2>&1"
 	display notification "선택한 폴더에 고속 캡처와 OCR을 시작했습니다." with title "밀리 OCR"
-	return "밀리 OCR 작업을 시작했습니다."
+	try
+		with timeout of 604800 seconds
+			do shell script launchCommand
+		end timeout
+	on error errorMessage number errorNumber
+		display notification "작업이 중단됐습니다. 대시보드에서 원인을 확인해 주세요." with title "밀리 OCR"
+		return "밀리 OCR 오류 " & errorNumber & ": " & errorMessage
+	end try
+	return "밀리 OCR 작업을 완료했습니다."
 end run

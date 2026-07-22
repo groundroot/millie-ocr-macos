@@ -36,5 +36,5 @@ fi
 printf '\n%s\n' '설치가 완료되었습니다.'
 printf '%s\n' '1. ~/Applications/밀리 OCR.app을 단축어의 “앱 열기” 동작으로 선택하세요.'
 printf '%s\n' '2. 실행할 때마다 결과 저장 폴더를 선택할 수 있습니다.'
-printf '%s\n' '3. 처음 실행 시 macOS의 손쉬운 사용 및 화면 녹화 권한을 허용하세요.'
+printf '%s\n' '3. 권한 대상은 밀리의서재가 아니라 “밀리 OCR”입니다. 손쉬운 사용 및 화면 녹화를 허용하세요.'
 /usr/bin/open -R "$HOME/Applications/밀리 OCR.app" >/dev/null 2>&1 || true
