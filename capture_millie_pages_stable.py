@@ -50,7 +50,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--raw-format", choices=("jpg", "png"), default="jpg")
     parser.add_argument("--native-script", type=Path)
     parser.add_argument("--status-file", type=Path)
-    parser.add_argument("--retry-seconds", type=float, default=0.05)
+    parser.add_argument("--retry-seconds", type=float, default=0.02)
     parser.add_argument("--max-refreshes", type=int, default=80)
     parser.add_argument("--reader-ready-seconds", type=float, default=8.0)
     parser.add_argument("--workers", type=int, default=min(4, max(2, os.cpu_count() or 2)))
@@ -230,7 +230,10 @@ def focus_reader(args: argparse.Namespace) -> None:
 
 
 def close_table_of_contents(args: argparse.Namespace) -> None:
-    result = get_state_result(args, restore=True)
+    focus_reader(args)
+    # This is the only normal-path full accessibility tree scan. Per-page state
+    # reads use the counter-only native action for maximum capture throughput.
+    result = run_native(args, "tree")
     tree = result.get("snapshot", {}).get("treeText", "")
     if "목차" not in tree or not CLOSE_BUTTON.search(tree):
         return
@@ -459,10 +462,13 @@ def write_manifest(path: Path, payload: dict) -> None:
     temporary.replace(path)
 
 
-def check_finished_workers(jobs: dict[int, Future[str]]) -> None:
-    for future in jobs.values():
+def collect_finished_workers(
+    jobs: dict[int, Future[str]], completed_hashes: dict[int, str]
+) -> None:
+    for page, future in list(jobs.items()):
         if future.done():
-            future.result()
+            completed_hashes[page] = future.result()
+            del jobs[page]
 
 
 def main() -> None:
@@ -481,7 +487,7 @@ def main() -> None:
         raise RuntimeError("밀리의서재의 화면 캡처 창 번호를 확인하지 못했습니다.")
     print(
         f"app_pid={args.app_pid} core_graphics_window={args.cg_window_id} "
-        "capture_backend=core-graphics-fast",
+        "capture_backend=core-graphics-fast accessibility=counter-only-fast",
         flush=True,
     )
     current, total, title = state
@@ -525,6 +531,7 @@ def main() -> None:
         "pages": [],
     }
     jobs: dict[int, Future[str]] = {}
+    completed_hashes: dict[int, str] = {}
     output_paths: dict[int, Path] = {}
     previous_raw_hash = None
     started = time.perf_counter()
@@ -556,7 +563,7 @@ def main() -> None:
                 jobs[page] = executor.submit(
                     normalize_and_hash, raw_path, output_path, args
                 )
-                check_finished_workers(jobs)
+                collect_finished_workers(jobs, completed_hashes)
 
                 elapsed = max(time.perf_counter() - started, 0.001)
                 capture_rate = page / elapsed
@@ -611,11 +618,16 @@ def main() -> None:
             if end_page is None:
                 raise RuntimeError("Capture ended without determining the final page")
             for page in range(1, end_page + 1):
+                page_hash = (
+                    completed_hashes[page]
+                    if page in completed_hashes
+                    else jobs[page].result()
+                )
                 manifest["pages"].append(
                     {
                         "reader_page": page,
                         "file": output_paths[page].name,
-                        "sha256": jobs[page].result(),
+                        "sha256": page_hash,
                     }
                 )
 
