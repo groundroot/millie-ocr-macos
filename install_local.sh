@@ -43,6 +43,7 @@ for file in \
   make_image_pdf.py \
   millie_native.applescript \
   Millie_OCR.applescript \
+  Millie_OCR_Launcher.applescript \
   Shortcut_Action.applescript \
   bootstrap_macos.sh \
   README.md; do
@@ -68,13 +69,24 @@ done
 
 /usr/bin/osacompile -o "$INSTALL_DIR/millie_native.scpt" "$INSTALL_DIR/millie_native.applescript"
 /usr/bin/osacompile -o "$INSTALL_DIR/Millie_OCR.scpt" "$INSTALL_DIR/Millie_OCR.applescript"
-/usr/bin/osacompile -o "$APP_PATH" "$INSTALL_DIR/Millie_OCR.applescript"
-/usr/bin/ditto "$INSTALL_DIR/assets/MillieOCR.icns" "$APP_PATH/Contents/Resources/MillieOCR.icns"
-/usr/libexec/PlistBuddy -c 'Delete :CFBundleIdentifier' "$APP_PATH/Contents/Info.plist" >/dev/null 2>&1 || true
-/usr/libexec/PlistBuddy -c 'Add :CFBundleIdentifier string com.groundroot.millieocr' "$APP_PATH/Contents/Info.plist"
-/usr/libexec/PlistBuddy -c 'Set :CFBundleIconFile MillieOCR' "$APP_PATH/Contents/Info.plist"
-/usr/libexec/PlistBuddy -c 'Delete :CFBundleIconName' "$APP_PATH/Contents/Info.plist" >/dev/null 2>&1 || true
-/usr/bin/codesign --force --deep --sign - "$APP_PATH" >/dev/null
+APP_ACTION="preserved"
+if [[ ! -d "$APP_PATH" || "${MILLIE_OCR_FORCE_APP_REBUILD:-0}" == "1" ]]; then
+  /usr/bin/osacompile -o "$APP_PATH" "$INSTALL_DIR/Millie_OCR_Launcher.applescript"
+  /usr/bin/ditto "$INSTALL_DIR/assets/MillieOCR.icns" "$APP_PATH/Contents/Resources/MillieOCR.icns"
+  /usr/libexec/PlistBuddy -c 'Delete :CFBundleIdentifier' "$APP_PATH/Contents/Info.plist" >/dev/null 2>&1 || true
+  /usr/libexec/PlistBuddy -c 'Add :CFBundleIdentifier string com.groundroot.millieocr' "$APP_PATH/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c 'Set :CFBundleIconFile MillieOCR' "$APP_PATH/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c 'Delete :CFBundleIconName' "$APP_PATH/Contents/Info.plist" >/dev/null 2>&1 || true
+  /usr/bin/touch "$APP_PATH/Contents/Resources/millie-ocr-stable-launcher-v1"
+  SIGNING_IDENTITY="${MILLIE_OCR_SIGNING_IDENTITY:--}"
+  /usr/bin/codesign --force --deep --sign "$SIGNING_IDENTITY" "$APP_PATH" >/dev/null
+  APP_ACTION="rebuilt"
+else
+  if ! /usr/bin/codesign --verify --deep "$APP_PATH" >/dev/null 2>&1; then
+    printf '%s\n' '기존 밀리 OCR.app의 서명이 손상되었습니다. MILLIE_OCR_FORCE_APP_REBUILD=1로 다시 설치하세요.' >&2
+    exit 11
+  fi
+fi
 
 PERMISSION_MARKER="$HOME/.cache/millie-ocr/permission-setup.request"
 PERMISSION_RESULT="$HOME/.cache/millie-ocr/permission-setup.result"
@@ -118,9 +130,11 @@ run_permission_stage() {
   return 1
 }
 
-if [[ "${MILLIE_OCR_SKIP_PERMISSION_SETUP:-0}" != "1" ]]; then
+PERMISSION_ACTION="preserved"
+if [[ "${MILLIE_OCR_SKIP_PERMISSION_SETUP:-0}" != "1" && ( "$APP_ACTION" == "rebuilt" || "${MILLIE_OCR_FORCE_PERMISSION_SETUP:-0}" == "1" ) ]]; then
   run_permission_stage accessibility "1/2 손쉬운 사용"
   run_permission_stage screen "2/2 화면 녹화"
+  PERMISSION_ACTION="checked"
 fi
 
 if [[ -n "$RUNTIME_PYTHON" && -x "$RUNTIME_PYTHON" ]]; then
@@ -144,3 +158,5 @@ if [[ -n "$RUNTIME_PYTHON" && -x "$RUNTIME_PYTHON" ]]; then
 fi
 printf 'installed=%s\n' "$INSTALL_DIR"
 printf 'app=%s\n' "$APP_PATH"
+printf 'app_action=%s\n' "$APP_ACTION"
+printf 'permission_action=%s\n' "$PERMISSION_ACTION"
