@@ -29,7 +29,7 @@ def now_iso() -> str:
 
 def default_status() -> dict[str, Any]:
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "state": "idle",
         "phase": "preparing",
         "message": "새 OCR 작업을 기다리고 있습니다.",
@@ -46,6 +46,7 @@ def default_status() -> dict[str, Any]:
         "epub_path": "",
         "log_path": "",
         "error": "",
+        "worker_pid": 0,
         "history": [],
     }
 
@@ -136,6 +137,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epub-path")
     parser.add_argument("--log-path")
     parser.add_argument("--error")
+    parser.add_argument("--worker-pid", type=int)
     return parser.parse_args()
 
 
@@ -157,6 +159,7 @@ def main() -> None:
         "epub_path": args.epub_path,
         "log_path": args.log_path,
         "error": args.error,
+        "worker_pid": args.worker_pid,
     }
     update_status(args.file.expanduser(), reset=args.reset, **changes)
 
