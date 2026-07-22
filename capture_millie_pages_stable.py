@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Fast, counter-verified capture for a Millie's Library reader window."""
 
+from __future__ import annotations
+
 import argparse
 import hashlib
 import json
 import os
 import re
-import shutil
 import subprocess
 import tempfile
 import time
@@ -24,8 +25,12 @@ FINAL_PAGE_COUNTER = re.compile(
     r"(?<!\d)(\d+)\s*/\s*\(\s*100\s*%\s*\)"
 )
 SLIDER_PAGE_COUNTER = re.compile(
-    r"slider[^\n]*진행바,\s*Value:\s*(\d+(?:\.\d+)?)",
+    r"(?:slider|AXSlider)[^\n]*(?:Value:|value\s*[=:]\s*)(\d+(?:\.\d+)?)",
     re.IGNORECASE,
+)
+KEY_CODES = {"Left": 123, "Right": 124, "Escape": 53}
+CLOSE_BUTTON = re.compile(
+    r"role=AXButton[^\n]*(?:name=닫기|description=닫기)", re.IGNORECASE
 )
 State = tuple[int, int, str]
 
@@ -36,7 +41,6 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("output_dir", type=Path)
     parser.add_argument("--app", default=DEFAULT_APP)
-    parser.add_argument("--window-id", type=int, required=True)
     parser.add_argument("--app-pid", type=int)
     parser.add_argument("--cg-window-id", type=int)
     parser.add_argument("--end-page", type=int)
@@ -44,7 +48,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-height", type=int, default=2480)
     parser.add_argument("--trim-ratio", type=float, default=0.025)
     parser.add_argument("--raw-format", choices=("jpg", "png"), default="jpg")
-    parser.add_argument("--orca-bin", default="orca")
+    parser.add_argument("--native-script", type=Path)
     parser.add_argument("--status-file", type=Path)
     parser.add_argument("--retry-seconds", type=float, default=0.05)
     parser.add_argument("--max-refreshes", type=int, default=80)
@@ -53,32 +57,34 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def run_json(command: list[str]) -> dict:
+def run_native(
+    args: argparse.Namespace, action: str, key: str | None = None
+) -> dict:
+    command = ["/usr/bin/osascript", str(args.native_script), action, args.app]
+    if key is not None:
+        command.append(str(KEY_CODES[key]))
     completed = subprocess.run(command, check=False, capture_output=True, text=True)
     if completed.returncode != 0:
-        raise RuntimeError(completed.stderr.strip() or completed.stdout.strip())
-    payload = json.loads(completed.stdout)
-    if not payload.get("ok"):
-        error = payload.get("error", {})
-        raise RuntimeError(
-            f"{error.get('code', 'orca_error')}: {error.get('message', error)}"
-        )
-    return payload["result"]
-
-
-def app_command(args: argparse.Namespace, action: str, *extra: str) -> list[str]:
-    command = [
-        args.orca_bin,
-        "computer",
-        action,
-        "--app",
-        args.app,
-        "--window-id",
-        str(args.window_id),
-    ]
-    command.extend(extra)
-    command.append("--json")
-    return command
+        detail = (completed.stderr or completed.stdout).strip()
+        if "-25211" in detail or "보조 접근" in detail or "assistive" in detail.lower():
+            raise RuntimeError(
+                "macOS 손쉬운 사용 권한이 필요합니다. 시스템 설정 > 개인정보 보호 및 보안 > "
+                "손쉬운 사용에서 '밀리 OCR' 또는 '단축어'를 허용해 주세요."
+            )
+        raise RuntimeError(detail or "밀리의서재 창을 제어하지 못했습니다.")
+    lines = completed.stdout.splitlines()
+    if len(lines) < 2:
+        raise RuntimeError("밀리의서재 창 상태를 읽지 못했습니다.")
+    try:
+        args.app_pid = int(lines[0].strip())
+    except ValueError as error:
+        raise RuntimeError("밀리의서재 프로세스 번호를 읽지 못했습니다.") from error
+    return {
+        "snapshot": {
+            "window": {"title": lines[1].strip()},
+            "treeText": "\n".join(lines[2:]),
+        }
+    }
 
 
 def state_from_result(result: dict) -> State:
@@ -161,14 +167,11 @@ String(best)'''
 def get_state_result(args: argparse.Namespace, restore: bool = False) -> dict:
     last_error = None
     for attempt in range(3):
-        extra = ["--no-screenshot"]
-        if restore or attempt > 0:
-            extra.insert(0, "--restore-window")
         try:
-            return run_json(app_command(args, "get-app-state", *extra))
+            return run_native(args, "focus" if restore or attempt > 0 else "state")
         except RuntimeError as error:
             last_error = error
-            if "window_not_focused" not in str(error) and "window_not_found" not in str(error):
+            if "열린 책 창" not in str(error) and "실행 중" not in str(error):
                 raise
             activate_reader(args.app)
             time.sleep(args.retry_seconds)
@@ -204,11 +207,8 @@ def press_key(args: argparse.Namespace, key: str) -> State:
         if attempt > 0:
             activate_reader(args.app)
             time.sleep(0.04 * attempt)
-        extra = ["--key", key, "--no-screenshot"]
-        if attempt > 0:
-            extra.insert(0, "--restore-window")
         try:
-            result = run_json(app_command(args, "press-key", *extra))
+            result = run_native(args, "press", key)
             try:
                 return state_from_result(result)
             except RuntimeError as error:
@@ -217,13 +217,13 @@ def press_key(args: argparse.Namespace, key: str) -> State:
                 return get_state(args, restore=attempt > 0)
         except RuntimeError as error:
             last_error = error
-            if "window_not_focused" not in str(error) and "window_not_found" not in str(error):
+            if "열린 책 창" not in str(error) and "실행 중" not in str(error):
                 raise
     raise RuntimeError(f"Reader could not retain keyboard focus: {last_error}")
 
 
 def focus_reader(args: argparse.Namespace) -> None:
-    activate_reader(args.app)
+    run_native(args, "focus")
     # Keyboard delivery can restore the window itself. Avoid clicking the page body:
     # Millie's reader occasionally treats a center click as an exit/navigation action.
 
@@ -231,21 +231,11 @@ def focus_reader(args: argparse.Namespace) -> None:
 def close_table_of_contents(args: argparse.Namespace) -> None:
     result = get_state_result(args, restore=True)
     tree = result.get("snapshot", {}).get("treeText", "")
-    if "heading 목차" not in tree:
+    if "목차" not in tree or not CLOSE_BUTTON.search(tree):
         return
-    menu_tree = tree.split("heading 목차", 1)[1]
-    close_buttons = re.findall(r"(?m)^\s*(\d+)\s+button 닫기\s*$", menu_tree)
-    if not close_buttons:
+    closed = run_native(args, "close")
+    if CLOSE_BUTTON.search(closed.get("snapshot", {}).get("treeText", "")):
         raise RuntimeError("The table of contents is open but its close button was not found")
-    run_json(
-        app_command(
-            args,
-            "click",
-            "--element-index",
-            close_buttons[0],
-            "--no-screenshot",
-        )
-    )
 
 
 def wait_for_counter(
@@ -278,26 +268,7 @@ def advance_without_known_total(
         if delivery:
             activate_reader(args.app)
             time.sleep(0.12)
-        extra = ["--key", "Right", "--no-screenshot"]
-        if delivery:
-            extra.insert(0, "--restore-window")
-        try:
-            initial_result = run_json(app_command(args, "press-key", *extra))
-        except RuntimeError as error:
-            if "window_not_focused" not in str(error) and "window_not_found" not in str(error):
-                raise
-            activate_reader(args.app)
-            time.sleep(args.retry_seconds)
-            initial_result = run_json(
-                app_command(
-                    args,
-                    "press-key",
-                    "--restore-window",
-                    "--key",
-                    "Right",
-                    "--no-screenshot",
-                )
-            )
+        initial_result = run_native(args, "press", "Right")
 
         for attempt in range(args.max_refreshes):
             result = initial_result if attempt == 0 else get_state_result(
@@ -401,38 +372,32 @@ def image_hash(path: Path) -> str:
 
 def capture_raw(args: argparse.Namespace, destination: Path) -> State | None:
     destination.unlink(missing_ok=True)
-    if args.direct_capture:
-        completed = subprocess.run(
-            [
-                "/usr/sbin/screencapture",
-                "-x",
-                "-o",
-                "-t",
-                args.raw_format,
-                "-l",
-                str(args.cg_window_id),
-                str(destination),
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        if completed.returncode == 0 and destination.is_file() and destination.stat().st_size:
-            return None
-        if args.app_pid:
-            refreshed_window_id = resolve_cg_window_id(args.app_pid)
-            if refreshed_window_id and refreshed_window_id != args.cg_window_id:
-                args.cg_window_id = refreshed_window_id
-                return capture_raw(args, destination)
-        args.direct_capture = False
-        print("capture_backend=orca-fallback", flush=True)
-
-    result = run_json(app_command(args, "get-app-state"))
-    screenshot = Path(result.get("screenshot", {}).get("path", ""))
-    if not screenshot.is_file():
-        raise RuntimeError("Neither direct window capture nor Orca returned a screenshot")
-    shutil.copy2(screenshot, destination)
-    return state_from_result(result)
+    completed = subprocess.run(
+        [
+            "/usr/sbin/screencapture",
+            "-x",
+            "-o",
+            "-t",
+            args.raw_format,
+            "-l",
+            str(args.cg_window_id),
+            str(destination),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode == 0 and destination.is_file() and destination.stat().st_size:
+        return None
+    if args.app_pid:
+        refreshed_window_id = resolve_cg_window_id(args.app_pid)
+        if refreshed_window_id and refreshed_window_id != args.cg_window_id:
+            args.cg_window_id = refreshed_window_id
+            return capture_raw(args, destination)
+    raise RuntimeError(
+        "밀리의서재 창을 캡처하지 못했습니다. 시스템 설정 > 개인정보 보호 및 보안 > "
+        "화면 및 시스템 오디오 녹음에서 '밀리 OCR' 또는 '단축어'를 허용해 주세요."
+    )
 
 
 def capture_distinct_raw(
@@ -501,19 +466,23 @@ def check_finished_workers(jobs: dict[int, Future[str]]) -> None:
 
 def main() -> None:
     args = parse_args()
-    args.cg_window_id = args.cg_window_id or (
-        resolve_cg_window_id(args.app_pid) if args.app_pid else None
-    )
-    args.direct_capture = args.cg_window_id is not None
-    print(
-        f"window_ids=accessibility:{args.window_id} core_graphics:{args.cg_window_id or 'unavailable'} "
-        f"capture_backend={'core-graphics-fast' if args.direct_capture else 'orca-fallback'}",
-        flush=True,
-    )
+    if args.native_script is None:
+        sibling = Path(__file__).resolve().with_name("millie_native.scpt")
+        args.native_script = sibling if sibling.is_file() else sibling.with_suffix(".applescript")
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
     state = rewind_and_warm_reader(args)
+    args.cg_window_id = args.cg_window_id or (
+        resolve_cg_window_id(args.app_pid) if args.app_pid else None
+    )
+    if args.cg_window_id is None:
+        raise RuntimeError("밀리의서재의 화면 캡처 창 번호를 확인하지 못했습니다.")
+    print(
+        f"app_pid={args.app_pid} core_graphics_window={args.cg_window_id} "
+        "capture_backend=core-graphics-fast",
+        flush=True,
+    )
     current, total, title = state
     if current != 1:
         raise RuntimeError(f"Reader rewind failed; current page is {current}")
@@ -544,14 +513,14 @@ def main() -> None:
 
     manifest = {
         "app": args.app,
-        "window_id": args.window_id,
+        "app_pid": args.app_pid,
         "cg_window_id": args.cg_window_id,
         "title": title,
         "start_page": 1,
         "end_page": end_page,
         "total_pages": known_total,
         "target_size": [args.target_width, args.target_height],
-        "capture_mode": "core-graphics-fast" if args.direct_capture else "orca-fallback",
+        "capture_mode": "core-graphics-fast",
         "pages": [],
     }
     jobs: dict[int, Future[str]] = {}

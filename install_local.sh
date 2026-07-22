@@ -7,8 +7,18 @@ SOURCE_DIR="${0:A:h}"
 INSTALL_DIR="${MILLIE_OCR_INSTALL_DIR:-$HOME/Library/Application Support/MillieOCR}"
 DASHBOARD_LABEL="com.millieocr.dashboard"
 DASHBOARD_PLIST="$HOME/Library/LaunchAgents/${DASHBOARD_LABEL}.plist"
-RUNTIME_PYTHON="${MILLIE_OCR_DASHBOARD_PYTHON:-/usr/bin/python3}"
+RUNTIME_PYTHON="${MILLIE_OCR_DASHBOARD_PYTHON:-}"
+APP_DIR="$HOME/Applications"
+APP_PATH="$APP_DIR/밀리 OCR.app"
 
+if [[ -z "$RUNTIME_PYTHON" ]]; then
+  for candidate in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
+    if [[ -x "$candidate" ]] && "$candidate" -c 'import plistlib' >/dev/null 2>&1; then
+      RUNTIME_PYTHON="$candidate"
+      break
+    fi
+  done
+fi
 if [[ ! -x "$RUNTIME_PYTHON" ]]; then
   printf '%s\n' 'Python 3 is required. Run: brew install python' >&2
   exit 10
@@ -17,15 +27,7 @@ if ! "$RUNTIME_PYTHON" -c 'import plistlib'; then
   printf '%s\n' 'The selected Python cannot load its standard plist library.' >&2
   exit 10
 fi
-if ! command -v orca >/dev/null 2>&1; then
-  printf '%s\n' \
-    'Orca and its CLI are required.' \
-    'Install: brew install --cask stablyai/orca/orca' \
-    'Then open Orca and enable Settings > General > Orca CLI.' >&2
-  exit 11
-fi
-
-/bin/mkdir -p "$INSTALL_DIR" "$HOME/Library/Logs" "$HOME/Library/LaunchAgents" "$HOME/.cache/millie-ocr"
+/bin/mkdir -p "$INSTALL_DIR" "$APP_DIR" "$HOME/Library/Logs" "$HOME/Library/LaunchAgents" "$HOME/.cache/millie-ocr"
 for file in \
   run_millie_ocr.sh \
   status_store.py \
@@ -37,8 +39,10 @@ for file in \
   text_to_epub.py \
   install_surya_macos.sh \
   make_searchable_pdf.py \
+  millie_native.applescript \
   Millie_OCR.applescript \
   Shortcut_Action.applescript \
+  bootstrap_macos.sh \
   README.md; do
   /usr/bin/ditto "$SOURCE_DIR/$file" "$INSTALL_DIR/$file"
 done
@@ -52,9 +56,12 @@ done
   "$INSTALL_DIR/text_to_markdown.py" \
   "$INSTALL_DIR/text_to_epub.py" \
   "$INSTALL_DIR/install_surya_macos.sh" \
-  "$INSTALL_DIR/make_searchable_pdf.py"
+  "$INSTALL_DIR/make_searchable_pdf.py" \
+  "$INSTALL_DIR/bootstrap_macos.sh"
 
+/usr/bin/osacompile -o "$INSTALL_DIR/millie_native.scpt" "$INSTALL_DIR/millie_native.applescript"
 /usr/bin/osacompile -o "$INSTALL_DIR/Millie_OCR.scpt" "$INSTALL_DIR/Millie_OCR.applescript"
+/usr/bin/osacompile -o "$APP_PATH" "$INSTALL_DIR/Millie_OCR.applescript"
 if [[ -n "$RUNTIME_PYTHON" && -x "$RUNTIME_PYTHON" ]]; then
   "$RUNTIME_PYTHON" "$INSTALL_DIR/install_dashboard_agent.py" \
     --output "$DASHBOARD_PLIST" \
@@ -75,3 +82,4 @@ if [[ -n "$RUNTIME_PYTHON" && -x "$RUNTIME_PYTHON" ]]; then
   done
 fi
 printf 'installed=%s\n' "$INSTALL_DIR"
+printf 'app=%s\n' "$APP_PATH"
