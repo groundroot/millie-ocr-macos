@@ -33,6 +33,11 @@ if [[ -z "$RUNTIME_PYTHON" ]]; then
     fi
   done
 fi
+if [[ -z "$REQUESTED_RESULT_ROOT" && -z "${MILLIE_OCR_RESULT_ROOT:-}" && "$RUN_MODE" == "run" ]]; then
+  if ! REQUESTED_RESULT_ROOT="$(/usr/bin/osascript -e 'POSIX path of (choose folder with prompt "PDF·Markdown·EPUB 결과를 저장할 폴더를 선택하세요.")' 2>/dev/null)"; then
+    exit 0
+  fi
+fi
 RESULT_ROOT="${MILLIE_OCR_RESULT_ROOT:-$HOME/Documents/Codex/OCR Results}"
 if [[ -n "$REQUESTED_RESULT_ROOT" ]]; then
   RESULT_ROOT="$REQUESTED_RESULT_ROOT"
