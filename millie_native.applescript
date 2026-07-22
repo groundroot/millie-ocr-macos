@@ -62,6 +62,61 @@ on describeElement(elementRef)
 	return "role=" & roleText & " name=" & nameText & " description=" & descriptionText & " value=" & valueText
 end describeElement
 
+on joinOutputLines(outputLines)
+	set AppleScript's text item delimiters to linefeed
+	set outputText to outputLines as text
+	set AppleScript's text item delimiters to ""
+	return outputText
+end joinOutputLines
+
+on counterValue(elementRef)
+	set valueText to ""
+	tell application "System Events"
+		try
+			set valueText to my cleanText(value of attribute "AXValue" of elementRef)
+		end try
+		if valueText is "" then
+			try
+				set valueText to my cleanText(value of attribute "AXValueDescription" of elementRef)
+			end try
+		end if
+		if valueText is "" then
+			try
+				set valueText to my cleanText(value of elementRef)
+			end try
+		end if
+	end tell
+	return valueText
+end counterValue
+
+on counterSnapshot(processRef)
+	tell application "System Events"
+		if (count of windows of processRef) is 0 then error "밀리의서재에서 열린 책 창을 찾지 못했습니다."
+		set processID to unix id of processRef
+		set frontWindow to front window of processRef
+		set windowTitle to my cleanText(name of frontWindow)
+		set outputLines to {processID as text, windowTitle}
+		set allElements to entire contents of frontWindow
+		repeat with elementRef in allElements
+			set nameText to ""
+			try
+				set nameText to my cleanText(name of elementRef)
+			end try
+			if nameText contains "/" then
+				set end of outputLines to "role=AXStaticText name=" & nameText & " description= value="
+			else if nameText contains "진행바" then
+				set valueText to my counterValue(elementRef)
+				if valueText is not "" then
+					set end of outputLines to "role=AXSlider name=" & nameText & " description= value=" & valueText
+				end if
+			end if
+		end repeat
+		if (count of outputLines) > 2 then return my joinOutputLines(outputLines)
+	end tell
+	-- Unexpected reader layouts keep the detailed diagnostic path instead of failing silently.
+	return my snapshotProcess(processRef)
+end counterSnapshot
+
 on snapshotProcess(processRef)
 	tell application "System Events"
 		if (count of windows of processRef) is 0 then error "밀리의서재에서 열린 책 창을 찾지 못했습니다."
@@ -74,10 +129,7 @@ on snapshotProcess(processRef)
 			set elementLine to my describeElement(elementRef)
 			if elementLine is not "" then set end of outputLines to elementLine
 		end repeat
-		set AppleScript's text item delimiters to linefeed
-		set outputText to outputLines as text
-		set AppleScript's text item delimiters to ""
-		return outputText
+		return my joinOutputLines(outputLines)
 	end tell
 end snapshotProcess
 
@@ -120,17 +172,20 @@ on run argv
 		if (count of matchingProcesses) is 0 then error "밀리의서재 앱이 실행 중이 아닙니다."
 		set processRef to item 1 of matchingProcesses
 		if actionName is "focus" or actionName is "press" or actionName is "close" then
-			set frontmost of processRef to true
-			delay 0.04
+			if frontmost of processRef is false then
+				set frontmost of processRef to true
+				delay 0.02
+			end if
 		end if
 		if actionName is "press" then
 			if (count of argv) < 3 then error "키 코드가 필요합니다."
 			set requestedKeyCode to item 3 of argv as integer
 			key code requestedKeyCode
-			delay 0.015
+			delay 0.003
 		else if actionName is "close" then
 			my closeVisibleMenu(processRef)
 		end if
-		return my snapshotProcess(processRef)
+		if actionName is "tree" then return my snapshotProcess(processRef)
+		return my counterSnapshot(processRef)
 	end tell
 end run
