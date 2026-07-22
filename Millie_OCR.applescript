@@ -1,7 +1,108 @@
+use framework "Foundation"
+use framework "ApplicationServices"
+use framework "CoreGraphics"
+use scripting additions
+
 property runnerPath : (POSIX path of (path to home folder)) & "Library/Application Support/MillieOCR/run_millie_ocr.sh"
 property logPath : (POSIX path of (path to home folder)) & "Library/Logs/MillieOCRShortcut.log"
+property permissionMarkerPath : (POSIX path of (path to home folder)) & ".cache/millie-ocr/permission-setup.request"
+property permissionResultPath : (POSIX path of (path to home folder)) & ".cache/millie-ocr/permission-setup.result"
+
+on permissionMode()
+	try
+		return do shell script "/bin/cat " & quoted form of permissionMarkerPath
+	on error
+		return ""
+	end try
+end permissionMode
+
+on writePermissionResult(resultText)
+	set resultFile to POSIX file permissionResultPath
+	set fileHandle to missing value
+	try
+		set fileHandle to open for access resultFile with write permission
+		set eof fileHandle to 0
+		write resultText to fileHandle
+		close access fileHandle
+	on error
+		try
+			if fileHandle is not missing value then close access fileHandle
+		end try
+	end try
+end writePermissionResult
+
+on openPrivacyPane(permissionKind)
+	if permissionKind is "accessibility" then
+		set settingsURL to "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+	else
+		set settingsURL to "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+	end if
+	do shell script "/usr/bin/open " & quoted form of settingsURL
+end openPrivacyPane
+
+on requestAccessibilityPermission()
+	set promptOptions to current application's NSDictionary's dictionaryWithObject:true forKey:(current application's kAXTrustedCheckOptionPrompt)
+	current application's AXIsProcessTrustedWithOptions(promptOptions)
+	delay 0.4
+	if (current application's AXIsProcessTrusted() as boolean) then
+		my writePermissionResult("allowed")
+		return
+	end if
+	my openPrivacyPane("accessibility")
+	try
+		display dialog "손쉬운 사용에서 반드시 ‘밀리 OCR’을 켜세요. ‘밀리의서재’가 아닙니다. 켠 다음 권한 확인을 누르세요." with title "1/2 · 손쉬운 사용 권한" buttons {"설치 중단", "권한 확인"} default button "권한 확인" cancel button "설치 중단" with icon caution
+	on error number -128
+		my writePermissionResult("cancelled")
+		return
+	end try
+	if (current application's AXIsProcessTrusted() as boolean) then
+		my writePermissionResult("allowed")
+	else
+		my writePermissionResult("retry")
+	end if
+end requestAccessibilityPermission
+
+on requestScreenCapturePermission()
+	if (current application's CGPreflightScreenCaptureAccess() as boolean) then
+		my writePermissionResult("allowed")
+		return
+	end if
+	current application's CGRequestScreenCaptureAccess()
+	delay 0.4
+	if (current application's CGPreflightScreenCaptureAccess() as boolean) then
+		my writePermissionResult("allowed")
+		return
+	end if
+	my openPrivacyPane("screen")
+	try
+		display dialog "화면 및 시스템 오디오 녹음에서 반드시 ‘밀리 OCR’을 켜세요. 오디오는 사용하지 않지만 책 화면 캡처에 화면 권한이 필요합니다. 켠 다음 권한 확인을 누르세요." with title "2/2 · 화면 녹화 권한" buttons {"설치 중단", "권한 확인"} default button "권한 확인" cancel button "설치 중단" with icon caution
+	on error number -128
+		my writePermissionResult("cancelled")
+		return
+	end try
+	if (current application's CGPreflightScreenCaptureAccess() as boolean) then
+		my writePermissionResult("allowed")
+	else
+		my writePermissionResult("retry")
+	end if
+end requestScreenCapturePermission
+
+on runPermissionSetup(permissionKind)
+	if permissionKind is "accessibility" then
+		my requestAccessibilityPermission()
+	else if permissionKind is "screen" then
+		my requestScreenCapturePermission()
+	else
+		my writePermissionResult("invalid")
+	end if
+end runPermissionSetup
 
 on run
+	set requestedPermission to my permissionMode()
+	if requestedPermission is not "" then
+		my runPermissionSetup(requestedPermission)
+		return "밀리 OCR 권한 확인을 마쳤습니다."
+	end if
 	try
 		set selectedFolder to choose folder with prompt "PDF·Markdown·EPUB 결과를 저장할 폴더를 선택하세요."
 	on error number -128

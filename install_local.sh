@@ -71,6 +71,54 @@ done
 /usr/libexec/PlistBuddy -c 'Set :CFBundleIconFile MillieOCR' "$APP_PATH/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c 'Delete :CFBundleIconName' "$APP_PATH/Contents/Info.plist" >/dev/null 2>&1 || true
 /usr/bin/codesign --force --deep --sign - "$APP_PATH" >/dev/null
+
+PERMISSION_MARKER="$HOME/.cache/millie-ocr/permission-setup.request"
+PERMISSION_RESULT="$HOME/.cache/millie-ocr/permission-setup.result"
+
+run_permission_stage() {
+  local permission_kind="$1"
+  local permission_label="$2"
+  local permission_result=""
+  for attempt in {1..6}; do
+    /usr/bin/printf '%s' "$permission_kind" > "$PERMISSION_MARKER"
+    /bin/rm -f "$PERMISSION_RESULT"
+    printf '\n[%s] 설정 화면에서 “밀리 OCR”을 켠 뒤 앱의 권한 확인 버튼을 누르세요.\n' "$permission_label"
+    if ! /usr/bin/open -n -W "$APP_PATH"; then
+      printf '밀리 OCR 권한 설정 앱을 실행하지 못했습니다.\n' >&2
+      /bin/rm -f "$PERMISSION_MARKER" "$PERMISSION_RESULT"
+      return 1
+    fi
+    if [[ -f "$PERMISSION_RESULT" ]]; then
+      permission_result="$(/bin/cat "$PERMISSION_RESULT")"
+    else
+      permission_result="missing"
+    fi
+    case "$permission_result" in
+      allowed)
+        printf '[%s] 승인 확인 완료\n' "$permission_label"
+        /bin/rm -f "$PERMISSION_MARKER" "$PERMISSION_RESULT"
+        return 0
+        ;;
+      cancelled)
+        printf '[%s] 사용자가 설치를 중단했습니다.\n' "$permission_label" >&2
+        /bin/rm -f "$PERMISSION_MARKER" "$PERMISSION_RESULT"
+        return 1
+        ;;
+      *)
+        printf '[%s] 아직 승인되지 않았습니다. 설정을 다시 확인합니다. (%s/6)\n' "$permission_label" "$attempt"
+        ;;
+    esac
+  done
+  /bin/rm -f "$PERMISSION_MARKER" "$PERMISSION_RESULT"
+  printf '[%s] 권한을 확인하지 못해 설치를 중단합니다.\n' "$permission_label" >&2
+  return 1
+}
+
+if [[ "${MILLIE_OCR_SKIP_PERMISSION_SETUP:-0}" != "1" ]]; then
+  run_permission_stage accessibility "1/2 손쉬운 사용"
+  run_permission_stage screen "2/2 화면 녹화"
+fi
+
 if [[ -n "$RUNTIME_PYTHON" && -x "$RUNTIME_PYTHON" ]]; then
   "$RUNTIME_PYTHON" "$INSTALL_DIR/install_dashboard_agent.py" \
     --output "$DASHBOARD_PLIST" \
