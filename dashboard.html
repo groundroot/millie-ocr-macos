@@ -321,7 +321,7 @@
 
     .rail {
       display: grid;
-      grid-template-rows: auto auto 1fr;
+      grid-template-rows: auto auto auto 1fr;
       min-height: 510px;
     }
 
@@ -420,6 +420,65 @@
     .action span { display: block; font-size: 12px; font-weight: 700; }
     .action small { display: block; margin-top: 3px; color: var(--ink-soft); font-size: 10px; }
 
+    .stop-action {
+      width: 100%;
+      appearance: none;
+      border: 1px solid rgba(216,74,47,.45);
+      background: rgba(216,74,47,.07);
+      color: #9a321f;
+      padding: 14px 15px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      text-align: left;
+      cursor: pointer;
+      transition: background .2s, border-color .2s, transform .2s;
+    }
+
+    .stop-action:hover:not(:disabled) {
+      background: rgba(216,74,47,.13);
+      border-color: var(--accent);
+      transform: translateY(-1px);
+    }
+
+    .stop-action:focus-visible,
+    .dialog-button:focus-visible {
+      outline: 3px solid rgba(216,74,47,.3);
+      outline-offset: 2px;
+    }
+
+    .stop-action:disabled {
+      border-color: var(--line);
+      background: rgba(23,38,50,.025);
+      color: var(--ink-soft);
+      cursor: default;
+      opacity: .58;
+    }
+
+    .stop-action strong { display: block; font-size: 13px; }
+    .stop-action small { display: block; margin-top: 4px; color: currentColor; font-size: 10px; opacity: .75; }
+    .stop-icon { font-size: 17px; line-height: 1; }
+
+    .stop-dialog {
+      width: min(420px, calc(100% - 32px));
+      border: 1px solid var(--line);
+      padding: 0;
+      color: var(--ink);
+      background: #fcfaf4;
+      box-shadow: var(--shadow);
+    }
+
+    .stop-dialog::backdrop { background: rgba(23,38,50,.44); backdrop-filter: blur(3px); }
+    .dialog-body { padding: 26px; }
+    .dialog-body h2 { margin: 0; font-family: var(--serif); font-size: 25px; font-weight: 600; }
+    .dialog-body p { margin: 12px 0 0; color: var(--ink-soft); font-size: 14px; line-height: 1.65; word-break: keep-all; }
+    .dialog-actions { display: grid; grid-template-columns: 1fr 1fr; border-top: 1px solid var(--line); }
+    .dialog-button { border: 0; background: transparent; padding: 14px; cursor: pointer; color: var(--ink); }
+    .dialog-button + .dialog-button { border-left: 1px solid var(--line); }
+    .dialog-button.danger { color: #9a321f; font-weight: 800; background: rgba(216,74,47,.06); }
+    .dialog-button:hover { background: rgba(23,38,50,.05); }
+
     .timeline {
       margin: 0;
       padding: 0;
@@ -473,6 +532,8 @@
     body.has-error .error-box { display: block; }
     body.has-error .phase-label, body.has-error .percent { color: var(--accent); }
     body.complete .phase-label, body.complete .percent { color: var(--green); }
+    body.stopped .phase-label, body.stopped .percent { color: var(--yellow); }
+    .event.stopped .event-dot { background: var(--yellow); border-color: var(--yellow); }
 
     .footnote {
       display: flex;
@@ -568,6 +629,14 @@
         </section>
 
         <section class="rail-section">
+          <div class="section-head"><h2>작업 제어</h2><span class="eyebrow">CONTROL</span></div>
+          <button id="stopJob" class="stop-action" type="button" disabled>
+            <span><strong id="stopLabel">작업 중지</strong><small id="stopHint">작업 중에만 사용할 수 있습니다</small></span>
+            <span class="stop-icon" aria-hidden="true">■</span>
+          </button>
+        </section>
+
+        <section class="rail-section">
           <div class="section-head"><h2>결과 열기</h2></div>
           <div class="actions">
             <button class="action" data-target="folder" disabled><span>결과 폴더</span><small>전체 작업 자료</small></button>
@@ -591,6 +660,17 @@
     </footer>
   </main>
 
+  <dialog id="stopDialog" class="stop-dialog" aria-labelledby="stopDialogTitle" aria-describedby="stopDialogDescription">
+    <div class="dialog-body">
+      <h2 id="stopDialogTitle">작업을 중지할까요?</h2>
+      <p id="stopDialogDescription">현재 처리 중인 캡처 또는 OCR을 종료합니다. 이미 저장된 이미지와 결과 파일은 삭제하지 않습니다.</p>
+    </div>
+    <div class="dialog-actions">
+      <button id="cancelStop" class="dialog-button" type="button">계속 진행</button>
+      <button id="confirmStop" class="dialog-button danger" type="button">작업 중지</button>
+    </div>
+  </dialog>
+
   <script>
     const phases = [
       ["preparing", "준비"],
@@ -606,6 +686,7 @@
     const phaseWeights = {preparing: 0, capture: 5, ocr: 42, pdf: 84, markdown: 90, epub: 94, validation: 97, complete: 100};
     let latestStatus = null;
     let lastFetch = Date.now();
+    let stopRequestPending = false;
 
     const $ = id => document.getElementById(id);
 
@@ -668,7 +749,7 @@
       $("timeline").innerHTML = history.map(item => {
         const date = parseDate(item.at);
         const time = date ? date.toLocaleTimeString("ko-KR", {hour:"2-digit", minute:"2-digit"}) : "—";
-        const cls = item.state === "error" ? "error" : "";
+        const cls = item.state === "error" ? "error" : item.state === "stopped" ? "stopped" : "";
         return `<li class="event ${cls}"><time>${time}</time><span class="event-dot"></span><span>${escapeHtml(item.message || "")}</span></li>`;
       }).join("");
       $("timeline").scrollTop = $("timeline").scrollHeight;
@@ -692,12 +773,13 @@
 
       document.body.classList.toggle("has-error", status.state === "error");
       document.body.classList.toggle("complete", status.state === "complete");
+      document.body.classList.toggle("stopped", status.state === "stopped" || status.state === "stopping");
       document.body.classList.toggle("is-capturing", status.state === "running" && phase === "capture");
       $("hero").dataset.folio = String(Math.max(1, phases.findIndex(([key]) => key === phase) + 1)).padStart(2, "0");
       $("phaseLabel").textContent = phaseNames[phase] || "준비";
       $("bookTitle").textContent = status.book_title || (status.state === "idle" ? "새 책을 기다리는 중" : "책 제목 확인 중");
       $("message").textContent = status.message || "상태를 확인하고 있습니다.";
-      $("stateText").textContent = status.state === "complete" ? "완료" : status.state === "error" ? "중단" : status.state === "running" ? "진행 중" : "대기";
+      $("stateText").textContent = status.state === "complete" ? "완료" : status.state === "error" ? "오류" : status.state === "stopped" ? "사용자 중지" : status.state === "stopping" ? "중지 중" : status.state === "running" ? "진행 중" : "대기";
       $("currentPage").textContent = status.current > 0 ? status.current.toLocaleString("ko-KR") : "—";
       $("totalPages").textContent = status.total > 0 ? `전체 ${status.total.toLocaleString("ko-KR")}쪽` : "전체 쪽수 확인 전";
       $("percent").textContent = `${percent}%`;
@@ -712,6 +794,10 @@
 
       const paths = {folder: status.run_dir, pdf: status.pdf_path, markdown: status.markdown_path, epub: status.epub_path, log: status.log_path};
       document.querySelectorAll(".action").forEach(button => button.disabled = !paths[button.dataset.target]);
+      const canStop = status.state === "running" && !stopRequestPending;
+      $("stopJob").disabled = !canStop;
+      $("stopLabel").textContent = status.state === "stopping" || stopRequestPending ? "중지 요청 중" : "작업 중지";
+      $("stopHint").textContent = status.state === "running" ? "현재 작업을 안전하게 종료합니다" : status.state === "stopping" ? "처리 중인 프로세스를 종료하고 있습니다" : "작업 중에만 사용할 수 있습니다";
       renderPhases(status);
       renderTimeline(status);
     }
@@ -750,6 +836,30 @@
         setTimeout(() => button.querySelector("span").textContent = label, 1800);
       }
     }));
+
+    $("stopJob").addEventListener("click", () => {
+      if (!$("stopJob").disabled) $("stopDialog").showModal();
+    });
+    $("cancelStop").addEventListener("click", () => $("stopDialog").close());
+    $("confirmStop").addEventListener("click", async () => {
+      $("stopDialog").close();
+      stopRequestPending = true;
+      if (latestStatus) render(latestStatus);
+      try {
+        const response = await fetch("/api/stop", {
+          method: "POST",
+          headers: {"Content-Type": "application/json", "X-Millie-OCR": "stop"},
+          body: "{}"
+        });
+        const payload = await response.json();
+        if (!response.ok || !payload.ok) throw new Error(payload.error || "작업을 중지하지 못했습니다.");
+      } catch (error) {
+        $("message").textContent = error.message;
+      } finally {
+        stopRequestPending = false;
+        refresh();
+      }
+    });
 
     render({state:"idle", phase:"preparing", message:"단축어에서 ‘밀리 OCR’을 실행하면 이 화면에서 진행 상황을 바로 확인할 수 있습니다.", book_title:"", current:0, total:0, rate:0, history:[]});
     refresh();

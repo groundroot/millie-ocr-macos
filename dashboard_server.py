@@ -6,13 +6,114 @@ from __future__ import annotations
 import argparse
 import json
 import mimetypes
+import os
+import signal
 import subprocess
+import threading
+import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from status_store import load_status
+from status_store import load_status, update_status
+
+
+def process_command(pid: int) -> str:
+    if pid <= 1 or pid == os.getpid():
+        return ""
+    completed = subprocess.run(
+        ["/bin/ps", "-p", str(pid), "-o", "command="],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return completed.stdout.strip() if completed.returncode == 0 else ""
+
+
+def runner_is_alive(pid: int) -> bool:
+    command = process_command(pid)
+    return command.startswith("/bin/zsh ") and "run_millie_ocr.sh" in command
+
+
+def find_runner_pid(preferred_pid: int) -> int:
+    if runner_is_alive(preferred_pid):
+        return preferred_pid
+    completed = subprocess.run(
+        ["/usr/bin/pgrep", "-f", "run_millie_ocr.sh"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    candidates = {
+        int(line)
+        for line in completed.stdout.splitlines()
+        if line.isdigit() and int(line) != os.getpid()
+    }
+    verified = [pid for pid in candidates if runner_is_alive(pid)]
+    return verified[0] if len(verified) == 1 else 0
+
+
+def child_processes(pid: int) -> list[int]:
+    completed = subprocess.run(
+        ["/usr/bin/pgrep", "-P", str(pid)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode not in {0, 1}:
+        return []
+    return [int(line) for line in completed.stdout.splitlines() if line.isdigit()]
+
+
+def process_tree(pid: int) -> list[int]:
+    descendants: list[int] = []
+    for child in child_processes(pid):
+        descendants.extend(process_tree(child))
+        descendants.append(child)
+    return descendants
+
+
+def signal_process_tree(pid: int, requested_signal: signal.Signals) -> None:
+    for target in [*process_tree(pid), pid]:
+        try:
+            os.kill(target, requested_signal)
+        except (ProcessLookupError, PermissionError):
+            continue
+
+
+def terminate_runner(pid: int) -> bool:
+    if not runner_is_alive(pid):
+        return True
+    signal_process_tree(pid, signal.SIGTERM)
+    for _ in range(20):
+        if not runner_is_alive(pid):
+            return True
+        time.sleep(0.05)
+    signal_process_tree(pid, signal.SIGKILL)
+    for _ in range(20):
+        if not runner_is_alive(pid):
+            return True
+        time.sleep(0.05)
+    return not runner_is_alive(pid)
+
+
+def terminate_and_record(status_file: Path, pid: int) -> None:
+    if terminate_runner(pid):
+        update_status(
+            status_file,
+            state="stopped",
+            message="사용자가 작업을 중지했습니다.",
+            error="",
+            worker_pid=0,
+        )
+    else:
+        update_status(
+            status_file,
+            state="error",
+            message="작업을 완전히 중지하지 못했습니다.",
+            error="밀리 OCR 앱을 종료한 뒤 다시 시도해 주세요.",
+        )
 
 
 class DashboardServer(ThreadingHTTPServer):
@@ -99,6 +200,60 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
 
         self.send_json({"ok": False, "error": "Not found"}, HTTPStatus.NOT_FOUND)
+
+    def do_POST(self) -> None:
+        parsed = urlparse(self.path)
+        if parsed.path != "/api/stop":
+            self.send_json({"ok": False, "error": "Not found"}, HTTPStatus.NOT_FOUND)
+            return
+
+        expected_origins = {
+            f"http://127.0.0.1:{self.server.server_port}",
+            f"http://localhost:{self.server.server_port}",
+        }
+        origin = self.headers.get("Origin", "")
+        if origin and origin not in expected_origins:
+            self.send_json({"ok": False, "error": "허용되지 않은 요청입니다."}, HTTPStatus.FORBIDDEN)
+            return
+        if (
+            self.headers.get("X-Millie-OCR") != "stop"
+            or not self.headers.get("Content-Type", "").startswith("application/json")
+        ):
+            self.send_json({"ok": False, "error": "중지 요청을 확인할 수 없습니다."}, HTTPStatus.BAD_REQUEST)
+            return
+
+        status_payload = load_status(self.server.status_file)
+        if status_payload.get("state") == "stopping":
+            self.send_json({"ok": True, "message": "이미 작업을 중지하고 있습니다."})
+            return
+        if status_payload.get("state") != "running":
+            self.send_json({"ok": False, "error": "현재 실행 중인 작업이 없습니다."}, HTTPStatus.CONFLICT)
+            return
+
+        try:
+            worker_pid = int(status_payload.get("worker_pid") or 0)
+        except (TypeError, ValueError):
+            worker_pid = 0
+        worker_pid = find_runner_pid(worker_pid)
+        if worker_pid == 0:
+            self.send_json({"ok": False, "error": "실행 중인 작업 프로세스를 찾지 못했습니다."}, HTTPStatus.CONFLICT)
+            return
+
+        stop_request = self.server.status_file.with_name("stop.request")
+        stop_request.parent.mkdir(parents=True, exist_ok=True)
+        stop_request.write_text(str(worker_pid), encoding="utf-8")
+        update_status(
+            self.server.status_file,
+            state="stopping",
+            message="작업 중지를 요청했습니다. 현재 처리를 종료하고 있습니다.",
+            error="",
+        )
+        self.send_json({"ok": True, "message": "작업 중지를 요청했습니다."})
+        threading.Thread(
+            target=terminate_and_record,
+            args=(self.server.status_file, worker_pid),
+            daemon=True,
+        ).start()
 
 
 def parse_args() -> argparse.Namespace:

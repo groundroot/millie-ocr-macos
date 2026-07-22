@@ -48,6 +48,7 @@ if [[ ! -f "$NATIVE_SCRIPT" ]]; then
 fi
 LOCK_DIR="$CACHE_BASE/millie-ocr/active-run.lock"
 STATUS_FILE="${MILLIE_OCR_STATUS_FILE:-$CACHE_BASE/millie-ocr/status.json}"
+STOP_REQUEST_FILE="${STATUS_FILE:h}/stop.request"
 DASHBOARD_PORT="${MILLIE_OCR_DASHBOARD_PORT:-8765}"
 DASHBOARD_URL="http://127.0.0.1:${DASHBOARD_PORT}"
 SHORTCUT_LOG="$HOME/Library/Logs/MillieOCRShortcut.log"
@@ -102,11 +103,26 @@ cleanup() {
   if [[ -n "${CAFFEINATE_PID:-}" ]]; then
     /bin/kill "$CAFFEINATE_PID" >/dev/null 2>&1 || true
   fi
+  status_update --worker-pid 0
+  /bin/rm -f "$STOP_REQUEST_FILE" >/dev/null 2>&1 || true
   /bin/rmdir "$LOCK_DIR" >/dev/null 2>&1 || true
+}
+
+stop_requested() {
+  trap - ERR TERM INT
+  status_update \
+    --state stopped \
+    --message "사용자가 작업을 중지했습니다." \
+    --error ""
+  notify "작업을 안전하게 중지했습니다."
+  exit 130
 }
 
 fail() {
   local exit_code=$?
+  if [[ -f "$STOP_REQUEST_FILE" ]]; then
+    stop_requested
+  fi
   status_update \
     --state error \
     --message "작업이 중단되었습니다. 실행 기록에서 원인을 확인해 주세요." \
@@ -139,6 +155,9 @@ if ! /bin/mkdir "$LOCK_DIR" 2>/dev/null; then
 fi
 trap cleanup EXIT
 trap fail ERR
+trap stop_requested TERM INT
+
+/bin/rm -f "$STOP_REQUEST_FILE"
 
 status_update \
   --reset \
@@ -147,6 +166,7 @@ status_update \
   --message "OCR 작업을 준비하고 있습니다." \
   --phase-progress 0.05 \
   --book-title "$BOOK_TITLE" \
+  --worker-pid $$ \
   --log-path "$SHORTCUT_LOG"
 
 printf '[%s] launch mode=%s requested_book=%s result_root=%s\n' "$(/bin/date '+%Y-%m-%d %H:%M:%S')" "$RUN_MODE" "$BOOK_TITLE" "$RESULT_ROOT"
