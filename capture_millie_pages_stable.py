@@ -25,7 +25,7 @@ FINAL_PAGE_COUNTER = re.compile(
     r"(?<!\d)(\d+)\s*/\s*\(\s*100\s*%\s*\)"
 )
 SLIDER_PAGE_COUNTER = re.compile(
-    r"(?:slider|AXSlider)[^\n]*(?:Value:|value\s*[=:]\s*)(\d+(?:\.\d+)?)",
+    r"(?:slider|AXSlider|진행바)[^\n]*(?:Value:|value\s*[=:]\s*)(\d+(?:\.\d+)?)",
     re.IGNORECASE,
 )
 KEY_CODES = {"Left": 123, "Right": 124, "Escape": 53}

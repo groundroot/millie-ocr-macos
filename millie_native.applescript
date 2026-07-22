@@ -22,7 +22,6 @@ on describeElement(elementRef)
 	try
 		set roleText to my cleanText(role of elementRef)
 	end try
-	if roleText is not in {"AXStaticText", "AXSlider", "AXHeading", "AXButton", "AXWebArea"} then return ""
 	try
 		set nameText to my cleanText(name of elementRef)
 	end try
