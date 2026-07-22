@@ -139,6 +139,11 @@ on run
 		"/bin/zsh " & quoted form of runnerPath & " --auto run " & quoted form of resultRoot & " " & quoted form of outputMode & " >> " & ¬
 		quoted form of logPath & " 2>&1"
 	display notification ((my outputModeLabel(outputMode)) & " 작업을 시작했습니다.") with title "밀리 OCR"
+	-- Give the native chooser one event-loop turn to close, then return focus to the reader.
+	delay 0.1
+	try
+		tell application id "kr.co.millie.MillieShelf" to activate
+	end try
 	try
 		with timeout of 604800 seconds
 			do shell script launchCommand
