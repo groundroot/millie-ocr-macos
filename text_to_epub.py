@@ -30,6 +30,13 @@ class VisualAsset:
     path: Path
 
 
+@dataclass(frozen=True)
+class TocEntry:
+    title: str
+    anchor: str
+    level: int
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("input_txt", type=Path)
@@ -75,6 +82,86 @@ def resolve_images(images_dir: Path) -> list[Path]:
     if not images:
         raise SystemExit(f"EPUB에 사용할 페이지 이미지가 없습니다: {images_dir}")
     return images
+
+
+def chapter_marker(blocks: list[dict[str, Any]]) -> tuple[int, int, int] | None:
+    """Return the CHAPTER block index, number block index, and chapter number."""
+    for index, block in enumerate(blocks):
+        if plain_text(str(block.get("html") or "")).upper() != "CHAPTER":
+            continue
+        for number_index in range(index + 1, min(index + 3, len(blocks))):
+            number_text = plain_text(str(blocks[number_index].get("html") or ""))
+            if re.fullmatch(r"\d{1,2}", number_text):
+                return index, number_index, int(number_text)
+    return None
+
+
+def source_toc_pages(images: list[Path], data: dict[str, Any]) -> set[int]:
+    """Locate printed contents pages so they do not duplicate EPUB navigation."""
+    start: int | None = None
+    for page_index, image in enumerate(images):
+        blocks = (data.get(image.stem) or [{}])[0].get("blocks", [])
+        texts = {plain_text(str(block.get("html") or "")).upper() for block in blocks}
+        if "CONTENTS" in texts or "목차" in texts:
+            start = page_index
+            break
+    if start is None:
+        return set()
+
+    pages: set[int] = set()
+    for page_index in range(start, min(len(images), start + 12)):
+        blocks = (data.get(images[page_index].stem) or [{}])[0].get("blocks", [])
+        marker = chapter_marker(blocks) if isinstance(blocks, list) else None
+        if page_index > start and marker is not None and marker[2] == 1:
+            break
+        pages.add(page_index)
+    return pages
+
+
+def extract_chapter_titles(
+    images: list[Path],
+    data: dict[str, Any],
+    toc_pages: set[int],
+) -> dict[int, str]:
+    """Read chapter titles from the printed contents pages when available."""
+    titles: dict[int, str] = {}
+    active_number: int | None = None
+    title_parts: list[str] = []
+    waiting_for_number = False
+
+    def finish() -> None:
+        nonlocal active_number, title_parts
+        title = " ".join(title_parts).strip()
+        if active_number is not None and title:
+            titles.setdefault(active_number, title)
+        active_number = None
+        title_parts = []
+
+    for page_index in sorted(toc_pages):
+        blocks = (data.get(images[page_index].stem) or [{}])[0].get("blocks", [])
+        if not isinstance(blocks, list):
+            continue
+        for block in blocks:
+            text = plain_text(str(block.get("html") or ""))
+            if not text:
+                continue
+            if text.upper() == "CHAPTER":
+                finish()
+                waiting_for_number = True
+                continue
+            if waiting_for_number and re.fullmatch(r"\d{1,2}", text):
+                active_number = int(text)
+                waiting_for_number = False
+                continue
+            if active_number is None:
+                continue
+            if re.match(r"^\d{1,2}\s+", text) or text.startswith("쉬어가기"):
+                finish()
+                continue
+            if block.get("label") in {"Text", "SectionHeader"} and len(title_parts) < 3:
+                title_parts.append(text)
+    finish()
+    return titles
 
 
 def crop_white_margin(image: Image.Image) -> Image.Image:
@@ -173,6 +260,11 @@ def page_elements(
     image_stem: str | None,
     data: dict[str, Any],
     visual_by_page: dict[str, dict[int, VisualAsset]],
+    *,
+    page_index: int,
+    printed_toc_pages: set[int],
+    chapter_titles: dict[int, str],
+    toc_entries: list[TocEntry],
 ) -> list[str]:
     elements: list[str] = []
     if image_stem is not None:
@@ -180,7 +272,27 @@ def page_elements(
         blocks = page_result.get("blocks", [])
         assets = visual_by_page.get(image_stem, {})
         if isinstance(blocks, list):
+            marker = chapter_marker(blocks) if page_index not in printed_toc_pages else None
+            marker_indexes = {marker[0], marker[1]} if marker is not None else set()
+            page_headers = {
+                plain_text(str(block.get("html") or "")).upper()
+                for block in blocks
+                if block.get("label") == "PageHeader"
+            }
             for block_index, block in enumerate(blocks):
+                if marker is not None and block_index == marker[0]:
+                    chapter_number = marker[2]
+                    chapter_title = chapter_titles.get(chapter_number, "")
+                    anchor = f"chapter-{chapter_number:02d}"
+                    nav_title = f"{chapter_number:02d}. {chapter_title}" if chapter_title else f"CHAPTER {chapter_number:02d}"
+                    heading = f'<span class="chapter-label">CHAPTER {chapter_number:02d}</span>'
+                    if chapter_title:
+                        heading += f"<br/>{html.escape(chapter_title)}"
+                    elements.append(f'<h1 id="{anchor}">{heading}</h1>')
+                    toc_entries.append(TocEntry(nav_title, anchor, 1))
+                    continue
+                if block_index in marker_indexes:
+                    continue
                 asset = assets.get(block_index)
                 if asset is not None:
                     elements.append(
@@ -195,7 +307,18 @@ def page_elements(
                 escaped = html.escape(text)
                 label = block.get("label")
                 if label == "SectionHeader":
-                    elements.append(f"<h2>{escaped}</h2>")
+                    if page_index in printed_toc_pages or text.upper() == "CHAPTER" or re.fullmatch(r"\d{1,2}", text):
+                        elements.append(f"<h2>{escaped}</h2>")
+                    else:
+                        anchor = f"section-{page_index + 1:04d}-{block_index:02d}"
+                        level = 1 if page_headers & {"PROLOGUE", "EPILOGUE"} else 2
+                        nav_title = text
+                        if "PROLOGUE" in page_headers:
+                            nav_title = f"프롤로그 · {text}"
+                        elif "EPILOGUE" in page_headers:
+                            nav_title = f"에필로그 · {text}"
+                        elements.append(f'<h2 id="{anchor}">{escaped}</h2>')
+                        toc_entries.append(TocEntry(nav_title, anchor, level))
                 elif label == "Caption":
                     elements.append(f'<p class="caption">{escaped}</p>')
                 elif label == "Footnote":
@@ -203,6 +326,40 @@ def page_elements(
                 else:
                     elements.append(f"<p>{escaped}</p>")
     return elements or fallback_paragraphs(fallback_page)
+
+
+def navigation_list(entries: list[TocEntry]) -> str:
+    if not entries:
+        return '<ol><li><a href="content.xhtml">본문</a></li></ol>'
+    output = ["<ol>"]
+    parent_open = False
+    nested_open = False
+    for entry in entries:
+        link = f'<a href="content.xhtml#{html.escape(entry.anchor)}">{html.escape(entry.title)}</a>'
+        if entry.level <= 1:
+            if nested_open:
+                output.append("</ol></li>")
+                nested_open = False
+                parent_open = False
+            elif parent_open:
+                output.append("</li>")
+                parent_open = False
+            output.append(f"<li>{link}")
+            parent_open = True
+        else:
+            if not parent_open:
+                output.append('<li><a href="content.xhtml">본문</a>')
+                parent_open = True
+            if not nested_open:
+                output.append("<ol>")
+                nested_open = True
+            output.append(f"<li>{link}</li>")
+    if nested_open:
+        output.append("</ol></li>")
+    elif parent_open:
+        output.append("</li>")
+    output.append("</ol>")
+    return "".join(output)
 
 
 def merge_page_elements(target: list[str], incoming: list[str]) -> None:
@@ -281,11 +438,26 @@ def build_epub(
     identifier = f"urn:uuid:{uuid.uuid4()}"
     modified = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     elements: list[str] = []
+    toc_entries: list[TocEntry] = []
+    printed_toc_pages = source_toc_pages(images, data) if images else set()
+    chapter_titles = extract_chapter_titles(images, data, printed_toc_pages) if images else {}
     first_body_page = 1 if cover_path is not None else 0
     for page_index in range(first_body_page, len(pages)):
         page = pages[page_index]
         image_stem = images[page_index].stem if images else None
-        merge_page_elements(elements, page_elements(page, image_stem, data, visual_by_page))
+        merge_page_elements(
+            elements,
+            page_elements(
+                page,
+                image_stem,
+                data,
+                visual_by_page,
+                page_index=page_index,
+                printed_toc_pages=printed_toc_pages,
+                chapter_titles=chapter_titles,
+                toc_entries=toc_entries,
+            ),
+        )
     content_docs = {"content.xhtml": xhtml_document(title, "\n".join(elements))}
     content_items = ['<item id="content" href="content.xhtml" media-type="application/xhtml+xml"/>']
     spine_items = ['<itemref idref="content"/>']
@@ -293,7 +465,7 @@ def build_epub(
     report_status(status_file, f"표지와 본문 이미지 {visual_count}개를 연속 본문에 병합하고 있습니다.", 0.82)
     nav = xhtml_document(
         title,
-        f'<nav epub:type="toc" id="toc"><h1>{html.escape(title)}</h1><ol><li><a href="content.xhtml">본문</a></li></ol></nav>',
+        f'<nav epub:type="toc" id="toc"><h1>{html.escape(title)}</h1>{navigation_list(toc_entries)}</nav>',
     )
     cover_manifest = ""
     cover_spine = ""
@@ -339,6 +511,7 @@ def build_epub(
     styles = '''body { font-family: -apple-system, sans-serif; line-height: 1.75; margin: 5%; }
 h1 { font-size: 1.35em; margin: 0 0 2em; }
 h2 { font-size: 1.18em; margin: 1.6em 0 .8em; }
+.chapter-label { color: #666; font-size: .72em; letter-spacing: .08em; }
 p { margin: 0 0 1em; text-align: justify; }
 figure { margin: 1.5em auto; text-align: center; break-inside: avoid; }
 figure img { display: block; width: auto; max-width: 100%; max-height: 90vh; margin: 0 auto; }
