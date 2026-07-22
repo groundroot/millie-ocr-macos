@@ -46,6 +46,9 @@ for file in \
   README.md; do
   /usr/bin/ditto "$SOURCE_DIR/$file" "$INSTALL_DIR/$file"
 done
+/bin/mkdir -p "$INSTALL_DIR/assets"
+/usr/bin/ditto "$SOURCE_DIR/assets/MillieOCRIcon.png" "$INSTALL_DIR/assets/MillieOCRIcon.png"
+/usr/bin/ditto "$SOURCE_DIR/assets/MillieOCR.icns" "$INSTALL_DIR/assets/MillieOCR.icns"
 
 /bin/chmod 755 \
   "$INSTALL_DIR/run_millie_ocr.sh" \
@@ -62,6 +65,12 @@ done
 /usr/bin/osacompile -o "$INSTALL_DIR/millie_native.scpt" "$INSTALL_DIR/millie_native.applescript"
 /usr/bin/osacompile -o "$INSTALL_DIR/Millie_OCR.scpt" "$INSTALL_DIR/Millie_OCR.applescript"
 /usr/bin/osacompile -o "$APP_PATH" "$INSTALL_DIR/Millie_OCR.applescript"
+/usr/bin/ditto "$INSTALL_DIR/assets/MillieOCR.icns" "$APP_PATH/Contents/Resources/MillieOCR.icns"
+/usr/libexec/PlistBuddy -c 'Delete :CFBundleIdentifier' "$APP_PATH/Contents/Info.plist" >/dev/null 2>&1 || true
+/usr/libexec/PlistBuddy -c 'Add :CFBundleIdentifier string com.groundroot.millieocr' "$APP_PATH/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c 'Set :CFBundleIconFile MillieOCR' "$APP_PATH/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c 'Delete :CFBundleIconName' "$APP_PATH/Contents/Info.plist" >/dev/null 2>&1 || true
+/usr/bin/codesign --force --deep --sign - "$APP_PATH" >/dev/null
 if [[ -n "$RUNTIME_PYTHON" && -x "$RUNTIME_PYTHON" ]]; then
   "$RUNTIME_PYTHON" "$INSTALL_DIR/install_dashboard_agent.py" \
     --output "$DASHBOARD_PLIST" \

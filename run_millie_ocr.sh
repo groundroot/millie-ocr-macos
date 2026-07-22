@@ -167,6 +167,15 @@ fi
 status_update --phase preparing --message "밀리의 서재에서 열린 책과 쪽수를 확인하고 있습니다." --phase-progress 0.5
 
 if ! NATIVE_STATE="$(/usr/bin/osascript "$NATIVE_SCRIPT" state kr.co.millie.MillieShelf 2>&1)"; then
+  if [[ "$NATIVE_STATE" == *"-25211"* ]]; then
+    status_update \
+      --state error \
+      --phase preparing \
+      --message "밀리 OCR에 손쉬운 사용 권한이 필요합니다." \
+      --error "밀리의서재가 아니라 '밀리 OCR'을 시스템 설정 > 개인정보 보호 및 보안 > 손쉬운 사용에서 허용해 주세요. ${NATIVE_STATE}"
+    notify "밀리의서재가 아니라 '밀리 OCR'에 손쉬운 사용 권한을 허용해 주세요."
+    exit 3
+  fi
   status_update \
     --state error \
     --phase preparing \

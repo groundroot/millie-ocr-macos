@@ -68,8 +68,9 @@ def run_native(
         detail = (completed.stderr or completed.stdout).strip()
         if "-25211" in detail or "보조 접근" in detail or "assistive" in detail.lower():
             raise RuntimeError(
-                "macOS 손쉬운 사용 권한이 필요합니다. 시스템 설정 > 개인정보 보호 및 보안 > "
-                "손쉬운 사용에서 '밀리 OCR' 또는 '단축어'를 허용해 주세요."
+                "macOS 손쉬운 사용 권한이 필요합니다. '밀리의서재'가 아니라, 시스템 설정 > "
+                "개인정보 보호 및 보안 > 손쉬운 사용에서 '밀리 OCR'을 허용해 주세요. "
+                "AppleScript 실행 단축어를 사용한다면 '단축어'도 허용해야 합니다."
             )
         raise RuntimeError(detail or "밀리의서재 창을 제어하지 못했습니다.")
     lines = completed.stdout.splitlines()
