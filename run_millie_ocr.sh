@@ -326,6 +326,7 @@ PDF_PATH="$RUN_DIR/${SAFE_TITLE}_Surya2_OCR.pdf"
 IMAGE_PDF_PATH="$RUN_DIR/${SAFE_TITLE}_Images.pdf"
 MARKDOWN_PATH="$RUN_DIR/${SAFE_TITLE}_extracted.md"
 EPUB_PATH="$RUN_DIR/${SAFE_TITLE}_extracted.epub"
+EPUB_ASSETS_DIR="$RUN_DIR/epub-assets"
 VALIDATION_DIR="$RUN_DIR/validation"
 
 STATUS_PDF_PATH=""
@@ -446,6 +447,7 @@ if [[ "$OUTPUT_MODE" == "pdf-only" ]]; then
     --message "${CAPTURED_PAGES}쪽을 OCR 없는 PDF로 만들고 있습니다." \
     --current "$CAPTURED_PAGES" \
     --total "$EXPECTED_PAGES" \
+    --rate 0 \
     --phase-progress 0
   notify "${CAPTURED_PAGES}쪽 캡처 완료. OCR 없이 PDF를 만듭니다."
   "$ENGINE_PYTHON" "$PACKAGE_DIR/make_image_pdf.py" \
@@ -460,6 +462,7 @@ else
     --message "${CAPTURED_PAGES}쪽 캡처를 마쳤습니다. 한글 OCR을 시작합니다." \
     --current "$CAPTURED_PAGES" \
     --total "$EXPECTED_PAGES" \
+    --rate 0 \
     --phase-progress 0
   notify "${CAPTURED_PAGES}쪽 캡처 완료. 한글 OCR을 시작합니다."
   OCR_ARGS=(
@@ -493,7 +496,8 @@ else
     "$ENGINE_PYTHON" "$PACKAGE_DIR/text_to_markdown.py" \
       "$EXTRACTED_TEXT" \
       "$MARKDOWN_PATH" \
-      --title "$BOOK_TITLE"
+      --title "$BOOK_TITLE" \
+      --skip-first-page
     if [[ ! -s "$MARKDOWN_PATH" ]]; then
       printf 'Markdown was not created: %s\n' "$MARKDOWN_PATH" >&2
       exit 9
@@ -506,12 +510,16 @@ else
     "$ENGINE_PYTHON" "$PACKAGE_DIR/text_to_epub.py" \
       "$EXTRACTED_TEXT" \
       "$EPUB_PATH" \
-      --title "$BOOK_TITLE"
+      --title "$BOOK_TITLE" \
+      --images-dir "$IMAGE_DIR" \
+      --results-json "$RESULTS_DIR/$(/usr/bin/basename "$IMAGE_DIR")/results.json" \
+      --assets-dir "$EPUB_ASSETS_DIR" \
+      --status-file "$STATUS_FILE"
     if [[ ! -s "$EPUB_PATH" ]]; then
       printf 'EPUB was not created: %s\n' "$EPUB_PATH" >&2
       exit 10
     fi
-    status_update --phase epub --message "EPUB 제작과 기본 구조 검증을 완료했습니다." --phase-progress 1
+    status_update --phase epub --message "페이지 번호 없이 이어지는 본문에 표지와 내부 이미지를 병합했습니다." --phase-progress 1
   fi
 
   HANGUL_COUNT="$("$RUNTIME_PYTHON" -c 'import re,sys,pathlib; print(len(re.findall(r"[가-힣]", pathlib.Path(sys.argv[1]).read_text(encoding="utf-8", errors="ignore"))))' "$EXTRACTED_TEXT")"

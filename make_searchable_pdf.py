@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
 
+from ocr_progress import OCRProgressMonitor
 from status_store import update_status
 
 
@@ -116,7 +118,12 @@ def write_page_text(data: dict, images: list[Path], output_path: Path) -> int:
     return hangul
 
 
-def run_surya(args: argparse.Namespace, input_dir: Path, results_root: Path) -> Path:
+def run_surya(
+    args: argparse.Namespace,
+    input_dir: Path,
+    results_root: Path,
+    page_count: int,
+) -> Path:
     surya_bin = args.surya_bin or (Path(shutil.which("surya_ocr")) if shutil.which("surya_ocr") else None)
     if not surya_bin or not surya_bin.is_file():
         raise SystemExit("surya_ocr not found. Run install_surya_macos.sh or pass --surya-bin")
@@ -124,12 +131,33 @@ def run_surya(args: argparse.Namespace, input_dir: Path, results_root: Path) -> 
     environment = os.environ.copy()
     environment["SURYA_INFERENCE_BACKEND"] = args.backend
     environment.pop("SURYA_INFERENCE_KEEP_ALIVE", None)
-    report_status(args, "ocr", "Surya 2가 각 페이지의 한글을 분석하고 있습니다.", 0.05)
-    subprocess.run(
-        [str(surya_bin), str(input_dir), "--output_dir", str(results_root)],
-        check=True,
+    report_status(args, "ocr", f"한글 OCR 0/{page_count}쪽 · 모델을 준비하고 있습니다.", 0.01)
+    command = [str(surya_bin), str(input_dir), "--output_dir", str(results_root)]
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
         env=environment,
     )
+    monitor = OCRProgressMonitor(args.status_file, page_count) if args.status_file else None
+    port_pattern = re.compile(r"\bport(?:=|\s+)(\d{2,5})\b")
+    try:
+        assert process.stdout is not None
+        for line in process.stdout:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+            if monitor is not None:
+                match = port_pattern.search(line)
+                if match:
+                    monitor.start(int(match.group(1)))
+        return_code = process.wait()
+        if return_code:
+            raise subprocess.CalledProcessError(return_code, command)
+    finally:
+        if monitor is not None:
+            monitor.stop()
 
     report_status(args, "ocr", "한글 OCR 분석을 완료했습니다.", 1.0)
     expected = results_root / input_dir.name / "results.json"
@@ -263,7 +291,7 @@ def main() -> None:
         else:
             results_root = args.results_dir.resolve() if args.results_dir else temporary_path / "surya-results"
             results_root.mkdir(parents=True, exist_ok=True)
-            results_json = run_surya(args, input_dir, results_root)
+            results_json = run_surya(args, input_dir, results_root, len(images))
         data = json.loads(results_json.read_text(encoding="utf-8"))
         missing = [path.stem for path in images if path.stem not in data]
         if missing:

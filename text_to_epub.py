@@ -1,18 +1,33 @@
 #!/usr/bin/env python3
-"""Build a small, reflowable EPUB 3 book from page-separated OCR text."""
+"""Build a continuous reflowable EPUB 3 with cover and extracted visuals."""
 
 from __future__ import annotations
 
 import argparse
 import html
+import json
 import re
 import uuid
 import zipfile
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
+
+from PIL import Image, ImageChops
+
+from status_store import update_status
 
 
-PAGES_PER_CHAPTER = 20
+IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
+VISUAL_LABELS = {"Figure", "Picture", "Diagram", "Chart", "Image", "Table", "Equation"}
+
+
+@dataclass(frozen=True)
+class VisualAsset:
+    label: str
+    filename: str
+    path: Path
 
 
 def parse_args() -> argparse.Namespace:
@@ -20,7 +35,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("input_txt", type=Path)
     parser.add_argument("output_epub", type=Path)
     parser.add_argument("--title", required=True)
+    parser.add_argument("--images-dir", type=Path)
+    parser.add_argument("--results-json", type=Path)
+    parser.add_argument("--assets-dir", type=Path)
+    parser.add_argument("--status-file", type=Path)
     return parser.parse_args()
+
+
+def report_status(status_file: Path | None, message: str, progress: float) -> None:
+    if status_file is None:
+        return
+    update_status(
+        status_file.expanduser(),
+        state="running",
+        phase="epub",
+        message=message,
+        phase_progress=progress,
+    )
 
 
 def clean_page(page: str) -> str:
@@ -29,29 +60,195 @@ def clean_page(page: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
 
 
-def page_html(page: str, number: int) -> str:
-    marker = f'<span class="pagebreak" epub:type="pagebreak" id="page-{number}" title="{number}" aria-label="{number}쪽"></span>'
-    if not page:
-        return marker + '<p class="empty">인식된 텍스트 없음</p>'
-    paragraphs = []
-    for paragraph in re.split(r"\n\s*\n", page):
-        text = " ".join(line.strip() for line in paragraph.splitlines() if line.strip())
-        if text:
-            paragraphs.append(f"<p>{html.escape(text)}</p>")
-    return marker + "\n" + "\n".join(paragraphs)
+def plain_text(fragment: str) -> str:
+    fragment = re.sub(r"(?i)<br\s*/?>", "\n", fragment)
+    fragment = re.sub(r"(?i)</(?:p|div|li|h[1-6])>", "\n", fragment)
+    fragment = re.sub(r"<[^>]+>", "", fragment)
+    lines = [re.sub(r"\s+", " ", html.unescape(line)).strip() for line in fragment.splitlines()]
+    return " ".join(line for line in lines if line).strip()
 
 
-def xhtml_document(title: str, body: str) -> str:
+def resolve_images(images_dir: Path) -> list[Path]:
+    if not images_dir.is_dir():
+        raise SystemExit(f"EPUB 페이지 이미지 폴더가 없습니다: {images_dir}")
+    images = sorted(path for path in images_dir.iterdir() if path.suffix.lower() in IMAGE_SUFFIXES)
+    if not images:
+        raise SystemExit(f"EPUB에 사용할 페이지 이미지가 없습니다: {images_dir}")
+    return images
+
+
+def crop_white_margin(image: Image.Image) -> Image.Image:
+    rgb = image.convert("RGB")
+    difference = ImageChops.difference(rgb, Image.new("RGB", rgb.size, "white")).convert("L")
+    bounds = difference.point(lambda value: 255 if value > 14 else 0).getbbox()
+    if not bounds:
+        return rgb
+    left, top, right, bottom = bounds
+    padding = max(4, min(rgb.size) // 200)
+    return rgb.crop((max(0, left - padding), max(0, top - padding), min(rgb.width, right + padding), min(rgb.height, bottom + padding)))
+
+
+def save_cover(first_page: Path, assets_dir: Path) -> Path:
+    cover_path = assets_dir / "cover.jpg"
+    with Image.open(first_page) as source:
+        cover = crop_white_margin(source)
+        cover.thumbnail((1600, 2400), Image.Resampling.LANCZOS)
+        cover.save(cover_path, "JPEG", quality=92, optimize=True, progressive=True)
+    return cover_path
+
+
+def valid_bbox(block: dict[str, Any], width: int, height: int) -> tuple[int, int, int, int] | None:
+    bbox = block.get("bbox")
+    if not isinstance(bbox, list) or len(bbox) != 4:
+        return None
+    try:
+        x0, y0, x1, y1 = (float(value) for value in bbox)
+    except (TypeError, ValueError):
+        return None
+    padding = 10
+    bounds = (
+        max(0, int(x0) - padding),
+        max(0, int(y0) - padding),
+        min(width, int(x1 + 0.999) + padding),
+        min(height, int(y1 + 0.999) + padding),
+    )
+    left, top, right, bottom = bounds
+    if right - left < 80 or bottom - top < 80:
+        return None
+    if (right - left) * (bottom - top) < width * height * 0.002:
+        return None
+    return bounds
+
+
+def extract_assets(
+    images: list[Path],
+    data: dict[str, Any],
+    assets_dir: Path,
+    status_file: Path | None,
+) -> tuple[Path, dict[str, dict[int, VisualAsset]], int]:
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    cover_path = save_cover(images[0], assets_dir)
+    report_status(status_file, "첫 페이지를 EPUB 표지로 설정했습니다.", 0.18)
+    visual_by_page: dict[str, dict[int, VisualAsset]] = {}
+    visual_count = 0
+    total = len(images)
+    for page_number, image_path in enumerate(images, start=1):
+        page_assets: dict[int, VisualAsset] = {}
+        page_result = (data.get(image_path.stem) or [{}])[0]
+        blocks = page_result.get("blocks", [])
+        if page_number > 1 and isinstance(blocks, list):
+            with Image.open(image_path) as source:
+                source_rgb = source.convert("RGB")
+                page_visual_index = 0
+                for block_index, block in enumerate(blocks):
+                    if not isinstance(block, dict) or block.get("label") not in VISUAL_LABELS:
+                        continue
+                    bounds = valid_bbox(block, source_rgb.width, source_rgb.height)
+                    if bounds is None:
+                        continue
+                    page_visual_index += 1
+                    visual_count += 1
+                    label = str(block.get("label") or "Figure")
+                    filename = f"{image_path.stem}_{label.lower()}_{page_visual_index:02d}.jpg"
+                    output_path = assets_dir / filename
+                    source_rgb.crop(bounds).save(output_path, "JPEG", quality=91, optimize=True, progressive=True)
+                    page_assets[block_index] = VisualAsset(label, filename, output_path)
+        visual_by_page[image_path.stem] = page_assets
+        if page_number == total or page_number % 10 == 0:
+            report_status(
+                status_file,
+                f"EPUB 이미지 추출 {page_number}/{total}쪽 · {visual_count}개 발견",
+                0.18 + 0.52 * page_number / max(1, total),
+            )
+    return cover_path, visual_by_page, visual_count
+
+
+def fallback_paragraphs(page: str) -> list[str]:
+    normalized = re.sub(r"\s+", " ", page).strip()
+    return [f"<p>{html.escape(normalized)}</p>"] if normalized else []
+
+
+def page_elements(
+    fallback_page: str,
+    image_stem: str | None,
+    data: dict[str, Any],
+    visual_by_page: dict[str, dict[int, VisualAsset]],
+) -> list[str]:
+    elements: list[str] = []
+    if image_stem is not None:
+        page_result = (data.get(image_stem) or [{}])[0]
+        blocks = page_result.get("blocks", [])
+        assets = visual_by_page.get(image_stem, {})
+        if isinstance(blocks, list):
+            for block_index, block in enumerate(blocks):
+                asset = assets.get(block_index)
+                if asset is not None:
+                    elements.append(
+                        f'<figure><img src="images/{html.escape(asset.filename)}" alt="{html.escape(asset.label)}"/></figure>'
+                    )
+                    continue
+                if not isinstance(block, dict) or block.get("skipped") or block.get("error"):
+                    continue
+                text = plain_text(str(block.get("html") or ""))
+                if not text:
+                    continue
+                escaped = html.escape(text)
+                label = block.get("label")
+                if label == "SectionHeader":
+                    elements.append(f"<h2>{escaped}</h2>")
+                elif label == "Caption":
+                    elements.append(f'<p class="caption">{escaped}</p>')
+                elif label == "Footnote":
+                    elements.append(f'<aside class="footnote">{escaped}</aside>')
+                else:
+                    elements.append(f"<p>{escaped}</p>")
+    return elements or fallback_paragraphs(fallback_page)
+
+
+def merge_page_elements(target: list[str], incoming: list[str]) -> None:
+    """Join a paragraph split only because the source moved to the next page."""
+    if target and incoming and target[-1].startswith("<p>") and incoming[0].startswith("<p>"):
+        previous_text = html.unescape(re.sub(r"<[^>]+>", "", target[-1])).strip()
+        if previous_text and not re.search(r'[.!?。！？…]["”’\)\]]?$', previous_text):
+            previous = target.pop()
+            following = incoming.pop(0)
+            following_text = html.unescape(re.sub(r"<[^>]+>", "", following)).strip()
+            first_word = following_text.split(maxsplit=1)[0] if following_text else ""
+            korean_continuation = (
+                bool(re.search(r"[가-힣]$", previous_text))
+                and len(first_word) == 1
+                and first_word in "고며은는이가을를에도와과의로서만부터까지처럼보다"
+            )
+            if previous.endswith("-</p>"):
+                target.append(previous[:-5] + following[3:])
+            elif korean_continuation:
+                target.append(previous[:-4] + following[3:])
+            else:
+                target.append(previous[:-4] + " " + following[3:])
+    target.extend(incoming)
+
+
+def xhtml_document(title: str, body: str, *, body_class: str = "") -> str:
+    class_attribute = f' class="{html.escape(body_class)}"' if body_class else ""
     return f'''<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="ko" xml:lang="ko">
 <head><title>{html.escape(title)}</title><link rel="stylesheet" type="text/css" href="styles.css"/></head>
-<body>{body}</body>
+<body{class_attribute}>{body}</body>
 </html>
 '''
 
 
-def build_epub(input_txt: Path, output_epub: Path, title: str) -> int:
+def build_epub(
+    input_txt: Path,
+    output_epub: Path,
+    title: str,
+    *,
+    images_dir: Path | None = None,
+    results_json: Path | None = None,
+    assets_dir: Path | None = None,
+    status_file: Path | None = None,
+) -> tuple[int, int, Path | None]:
     text = input_txt.read_text(encoding="utf-8", errors="replace")
     pages = [clean_page(page) for page in text.split("\f")]
     while pages and not pages[-1]:
@@ -59,33 +256,61 @@ def build_epub(input_txt: Path, output_epub: Path, title: str) -> int:
     if not pages:
         raise SystemExit("EPUB으로 만들 OCR 본문이 없습니다.")
 
+    images: list[Path] = []
+    data: dict[str, Any] = {}
+    visual_by_page: dict[str, dict[int, VisualAsset]] = {}
+    visual_count = 0
+    cover_path: Path | None = None
+    if images_dir is not None:
+        images = resolve_images(images_dir.resolve())
+        if len(images) != len(pages):
+            raise SystemExit(f"EPUB 본문과 페이지 이미지 수가 다릅니다: {len(pages)} != {len(images)}")
+        if results_json is None or not results_json.is_file():
+            raise SystemExit("EPUB 내부 이미지 추출에 필요한 Surya results.json이 없습니다.")
+        data = json.loads(results_json.read_text(encoding="utf-8"))
+        missing = [image.stem for image in images if image.stem not in data]
+        if missing:
+            raise SystemExit(f"EPUB OCR 결과에 누락된 페이지가 있습니다: {', '.join(missing[:5])}")
+        cover_path, visual_by_page, visual_count = extract_assets(
+            images,
+            data,
+            (assets_dir or output_epub.parent / "epub-assets").resolve(),
+            status_file,
+        )
+
     identifier = f"urn:uuid:{uuid.uuid4()}"
     modified = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    chapter_files: list[str] = []
-    chapter_items: list[str] = []
-    spine_items: list[str] = []
-    toc_items: list[str] = []
-    page_list: list[str] = []
-    chapter_docs: dict[str, str] = {}
+    elements: list[str] = []
+    first_body_page = 1 if cover_path is not None else 0
+    for page_index in range(first_body_page, len(pages)):
+        page = pages[page_index]
+        image_stem = images[page_index].stem if images else None
+        merge_page_elements(elements, page_elements(page, image_stem, data, visual_by_page))
+    content_docs = {"content.xhtml": xhtml_document(title, "\n".join(elements))}
+    content_items = ['<item id="content" href="content.xhtml" media-type="application/xhtml+xml"/>']
+    spine_items = ['<itemref idref="content"/>']
 
-    for chapter_index, start in enumerate(range(0, len(pages), PAGES_PER_CHAPTER), start=1):
-        end = min(start + PAGES_PER_CHAPTER, len(pages))
-        filename = f"chapter-{chapter_index:03d}.xhtml"
-        item_id = f"chapter-{chapter_index:03d}"
-        chapter_files.append(filename)
-        chapter_items.append(f'<item id="{item_id}" href="{filename}" media-type="application/xhtml+xml"/>')
-        spine_items.append(f'<itemref idref="{item_id}"/>')
-        toc_items.append(f'<li><a href="{filename}#page-{start + 1}">{start + 1}–{end}쪽</a></li>')
-        body = [f"<h1>{start + 1}–{end}쪽</h1>"]
-        for page_number in range(start + 1, end + 1):
-            body.append(page_html(pages[page_number - 1], page_number))
-            page_list.append(f'<li><a href="{filename}#page-{page_number}">{page_number}</a></li>')
-        chapter_docs[filename] = xhtml_document(f"{title} · {start + 1}–{end}쪽", "\n".join(body))
-
+    report_status(status_file, f"표지와 본문 이미지 {visual_count}개를 연속 본문에 병합하고 있습니다.", 0.82)
     nav = xhtml_document(
         title,
-        f'''<nav epub:type="toc" id="toc"><h1>{html.escape(title)}</h1><ol>{''.join(toc_items)}</ol></nav>
-<nav epub:type="page-list" id="page-list"><h2>쪽 목록</h2><ol>{''.join(page_list)}</ol></nav>''',
+        f'<nav epub:type="toc" id="toc"><h1>{html.escape(title)}</h1><ol><li><a href="content.xhtml">본문</a></li></ol></nav>',
+    )
+    cover_manifest = ""
+    cover_spine = ""
+    cover_document = ""
+    if cover_path is not None:
+        cover_manifest = '''<item id="cover" href="cover.xhtml" media-type="application/xhtml+xml"/>
+  <item id="cover-image" href="images/cover.jpg" media-type="image/jpeg" properties="cover-image"/>'''
+        cover_spine = '<itemref idref="cover" linear="yes"/>'
+        cover_document = xhtml_document(
+            title,
+            f'<section epub:type="cover"><img src="images/cover.jpg" alt="{html.escape(title)} 표지"/></section>',
+            body_class="cover-page",
+        )
+    all_visual_assets = [asset for page in visual_by_page.values() for asset in page.values()]
+    visual_manifest = "".join(
+        f'<item id="visual-{index:04d}" href="images/{html.escape(asset.filename)}" media-type="image/jpeg"/>'
+        for index, asset in enumerate(all_visual_assets, start=1)
     )
     package = f'''<?xml version="1.0" encoding="utf-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="book-id" xml:lang="ko">
@@ -94,13 +319,16 @@ def build_epub(input_txt: Path, output_epub: Path, title: str) -> int:
   <dc:title>{html.escape(title)}</dc:title>
   <dc:language>ko</dc:language>
   <meta property="dcterms:modified">{modified}</meta>
+  {'<meta name="cover" content="cover-image"/>' if cover_path is not None else ''}
 </metadata>
 <manifest>
   <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
   <item id="styles" href="styles.css" media-type="text/css"/>
-  {''.join(chapter_items)}
+  {cover_manifest}
+  {visual_manifest}
+  {''.join(content_items)}
 </manifest>
-<spine>{''.join(spine_items)}</spine>
+<spine>{cover_spine}{''.join(spine_items)}</spine>
 </package>
 '''
     container = '''<?xml version="1.0" encoding="utf-8"?>
@@ -110,9 +338,14 @@ def build_epub(input_txt: Path, output_epub: Path, title: str) -> int:
 '''
     styles = '''body { font-family: -apple-system, sans-serif; line-height: 1.75; margin: 5%; }
 h1 { font-size: 1.35em; margin: 0 0 2em; }
+h2 { font-size: 1.18em; margin: 1.6em 0 .8em; }
 p { margin: 0 0 1em; text-align: justify; }
-.empty { color: #666; font-style: italic; }
-.pagebreak { display: block; break-before: page; }
+figure { margin: 1.5em auto; text-align: center; break-inside: avoid; }
+figure img { display: block; width: auto; max-width: 100%; max-height: 90vh; margin: 0 auto; }
+.caption { color: #555; font-size: .92em; text-align: center; }
+.footnote { color: #555; font-size: .85em; }
+.cover-page { margin: 0; padding: 0; text-align: center; }
+.cover-page section, .cover-page img { display: block; width: 100%; height: auto; margin: 0 auto; }
 nav ol { line-height: 1.8; }
 '''
 
@@ -123,22 +356,50 @@ nav ol { line-height: 1.8; }
         archive.writestr("EPUB/package.opf", package, compress_type=zipfile.ZIP_DEFLATED)
         archive.writestr("EPUB/nav.xhtml", nav, compress_type=zipfile.ZIP_DEFLATED)
         archive.writestr("EPUB/styles.css", styles, compress_type=zipfile.ZIP_DEFLATED)
-        for filename in chapter_files:
-            archive.writestr(f"EPUB/{filename}", chapter_docs[filename], compress_type=zipfile.ZIP_DEFLATED)
+        if cover_path is not None:
+            archive.writestr("EPUB/cover.xhtml", cover_document, compress_type=zipfile.ZIP_DEFLATED)
+            archive.write(cover_path, "EPUB/images/cover.jpg", compress_type=zipfile.ZIP_DEFLATED)
+        archive.writestr("EPUB/content.xhtml", content_docs["content.xhtml"], compress_type=zipfile.ZIP_DEFLATED)
+        for asset in all_visual_assets:
+            archive.write(asset.path, f"EPUB/images/{asset.filename}", compress_type=zipfile.ZIP_DEFLATED)
 
+    report_status(status_file, "EPUB 파일 구조와 표지·본문 이미지를 검증하고 있습니다.", 0.95)
     with zipfile.ZipFile(output_epub) as archive:
+        names = set(archive.namelist())
         if archive.namelist()[0] != "mimetype" or archive.read("mimetype") != b"application/epub+zip":
             raise SystemExit("EPUB mimetype 검증에 실패했습니다.")
         if archive.testzip() is not None:
             raise SystemExit("EPUB ZIP 검증에 실패했습니다.")
-    return len(pages)
+        if cover_path is not None and {"EPUB/cover.xhtml", "EPUB/images/cover.jpg"} - names:
+            raise SystemExit("EPUB 표지 검증에 실패했습니다.")
+        for document in content_docs.values():
+            for source in re.findall(r'<img src="([^"]+)"', document):
+                if f"EPUB/{source}" not in names:
+                    raise SystemExit(f"EPUB 본문 이미지가 누락됐습니다: {source}")
+            if re.search(r">\s*\d+\s*[–-]\s*\d+쪽\s*<", document):
+                raise SystemExit("EPUB 본문에 페이지 범위 제목이 남아 있습니다.")
+            if "epub:type=\"pagebreak\"" in document:
+                raise SystemExit("EPUB 본문에 페이지 번호 표시가 남아 있습니다.")
+    report_status(status_file, f"표지와 본문 이미지 {visual_count}개가 포함된 연속 EPUB을 완성했습니다.", 1.0)
+    return len(pages), visual_count, cover_path
 
 
 def main() -> None:
     args = parse_args()
-    pages = build_epub(args.input_txt.resolve(), args.output_epub.resolve(), args.title.strip())
+    pages, visuals, cover = build_epub(
+        args.input_txt.resolve(),
+        args.output_epub.resolve(),
+        args.title.strip(),
+        images_dir=args.images_dir,
+        results_json=args.results_json.resolve() if args.results_json else None,
+        assets_dir=args.assets_dir,
+        status_file=args.status_file,
+    )
     print(f"output={args.output_epub.resolve()}")
     print(f"pages={pages}")
+    print(f"visual_images={visuals}")
+    if cover is not None:
+        print(f"cover={cover}")
 
 
 if __name__ == "__main__":

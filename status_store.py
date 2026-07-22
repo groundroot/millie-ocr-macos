@@ -29,7 +29,7 @@ def now_iso() -> str:
 
 def default_status() -> dict[str, Any]:
     return {
-        "schema_version": 5,
+        "schema_version": 6,
         "state": "idle",
         "phase": "preparing",
         "output_mode": "all",
@@ -39,6 +39,9 @@ def default_status() -> dict[str, Any]:
         "total": 0,
         "rate": 0.0,
         "phase_progress": None,
+        "phase_current": 0,
+        "phase_total": 0,
+        "phase_active": 0,
         "started_at": None,
         "finished_at": None,
         "updated_at": now_iso(),
@@ -97,6 +100,10 @@ def update_status(
     requested_phase = changes.get("phase")
     if requested_phase is not None and requested_phase != previous_phase and changes.get("phase_progress") is None:
         payload["phase_progress"] = 0.0
+    if requested_phase is not None and requested_phase != previous_phase:
+        for key in ("phase_current", "phase_total", "phase_active"):
+            if changes.get(key) is None:
+                payload[key] = 0
 
     timestamp = now_iso()
     if reset and not payload.get("started_at"):
@@ -145,6 +152,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--total", type=int)
     parser.add_argument("--rate", type=float)
     parser.add_argument("--phase-progress", type=float)
+    parser.add_argument("--phase-current", type=int)
+    parser.add_argument("--phase-total", type=int)
+    parser.add_argument("--phase-active", type=int)
     parser.add_argument("--started-at")
     parser.add_argument("--finished-at")
     parser.add_argument("--run-dir")
@@ -169,6 +179,9 @@ def main() -> None:
         "total": args.total,
         "rate": args.rate,
         "phase_progress": args.phase_progress,
+        "phase_current": args.phase_current,
+        "phase_total": args.phase_total,
+        "phase_active": args.phase_active,
         "started_at": args.started_at,
         "finished_at": args.finished_at,
         "run_dir": args.run_dir,
