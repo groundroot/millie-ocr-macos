@@ -1,0 +1,13 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+*.scpt
+.cache/
+*.log
+*.pdf
+*.epub
+images/
+surya-results/
+validation/
+capture_manifest.json
+run-info.txt

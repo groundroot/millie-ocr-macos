@@ -1,0 +1,667 @@
+#!/usr/bin/env python3
+"""Fast, counter-verified capture for a Millie's Library reader window."""
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import tempfile
+import time
+from concurrent.futures import Future, ThreadPoolExecutor
+from pathlib import Path
+
+from PIL import Image
+
+from status_store import update_status
+
+
+DEFAULT_APP = "kr.co.millie.MillieShelf"
+PAGE_COUNTER = re.compile(r"(?<!\d)(\d+)\s*/\s*(\d+)(?!\d)")
+FINAL_PAGE_COUNTER = re.compile(
+    r"(?<!\d)(\d+)\s*/\s*\(\s*100\s*%\s*\)"
+)
+SLIDER_PAGE_COUNTER = re.compile(
+    r"slider[^\n]*진행바,\s*Value:\s*(\d+(?:\.\d+)?)",
+    re.IGNORECASE,
+)
+State = tuple[int, int, str]
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Capture a Millie's Library book from page 1 at maximum safe speed."
+    )
+    parser.add_argument("output_dir", type=Path)
+    parser.add_argument("--app", default=DEFAULT_APP)
+    parser.add_argument("--window-id", type=int, required=True)
+    parser.add_argument("--app-pid", type=int)
+    parser.add_argument("--cg-window-id", type=int)
+    parser.add_argument("--end-page", type=int)
+    parser.add_argument("--target-width", type=int, default=1748)
+    parser.add_argument("--target-height", type=int, default=2480)
+    parser.add_argument("--trim-ratio", type=float, default=0.025)
+    parser.add_argument("--raw-format", choices=("jpg", "png"), default="jpg")
+    parser.add_argument("--orca-bin", default="orca")
+    parser.add_argument("--status-file", type=Path)
+    parser.add_argument("--retry-seconds", type=float, default=0.05)
+    parser.add_argument("--max-refreshes", type=int, default=80)
+    parser.add_argument("--reader-ready-seconds", type=float, default=8.0)
+    parser.add_argument("--workers", type=int, default=min(4, max(2, os.cpu_count() or 2)))
+    return parser.parse_args()
+
+
+def run_json(command: list[str]) -> dict:
+    completed = subprocess.run(command, check=False, capture_output=True, text=True)
+    if completed.returncode != 0:
+        raise RuntimeError(completed.stderr.strip() or completed.stdout.strip())
+    payload = json.loads(completed.stdout)
+    if not payload.get("ok"):
+        error = payload.get("error", {})
+        raise RuntimeError(
+            f"{error.get('code', 'orca_error')}: {error.get('message', error)}"
+        )
+    return payload["result"]
+
+
+def app_command(args: argparse.Namespace, action: str, *extra: str) -> list[str]:
+    command = [
+        args.orca_bin,
+        "computer",
+        action,
+        "--app",
+        args.app,
+        "--window-id",
+        str(args.window_id),
+    ]
+    command.extend(extra)
+    command.append("--json")
+    return command
+
+
+def state_from_result(result: dict) -> State:
+    snapshot = result.get("snapshot", {})
+    tree = snapshot.get("treeText", "")
+    match = PAGE_COUNTER.search(tree)
+    if match:
+        current, total = map(int, match.groups())
+    else:
+        final_match = FINAL_PAGE_COUNTER.search(tree)
+        if final_match:
+            current = int(final_match.group(1))
+            total = current
+        else:
+            slider_match = SLIDER_PAGE_COUNTER.search(tree)
+            if slider_match:
+                current = max(1, int(round(float(slider_match.group(1)))))
+                total = 0
+            else:
+                raise RuntimeError(
+                    "Reader page counter was not found; close any menu and keep one page visible"
+                )
+    if current < 1 or (total > 0 and total < current):
+        raise RuntimeError(
+            f"Invalid reader page counter: {current}/{total}"
+        )
+    title = snapshot.get("window", {}).get("title", "")
+    return current, total, title
+
+
+def activate_reader(bundle_id: str) -> None:
+    subprocess.run(
+        ["osascript", "-e", f'tell application id "{bundle_id}" to activate'],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def resolve_cg_window_id(app_pid: int) -> int | None:
+    """Resolve the real CoreGraphics window id instead of reusing an AX id."""
+    script = f'''ObjC.import("CoreGraphics");
+const targetPid={int(app_pid)};
+const ref=$.CGWindowListCopyWindowInfo(
+  $.kCGWindowListOptionOnScreenOnly | $.kCGWindowListExcludeDesktopElements,
+  $.kCGNullWindowID
+);
+let best=0, bestArea=0;
+const count=Number($.CFArrayGetCount(ref));
+for(let i=0;i<count;i++){{
+  const item=ObjC.castRefToObject($.CFArrayGetValueAtIndex(ref,i));
+  const pid=Number(ObjC.unwrap(item.objectForKey("kCGWindowOwnerPID")));
+  const layer=Number(ObjC.unwrap(item.objectForKey("kCGWindowLayer")));
+  if(pid!==targetPid || layer!==0) continue;
+  const bounds=item.objectForKey("kCGWindowBounds");
+  const width=Number(ObjC.unwrap(bounds.objectForKey("Width")));
+  const height=Number(ObjC.unwrap(bounds.objectForKey("Height")));
+  const area=width*height;
+  if(area>bestArea){{
+    bestArea=area;
+    best=Number(ObjC.unwrap(item.objectForKey("kCGWindowNumber")));
+  }}
+}}
+String(best)'''
+    completed = subprocess.run(
+        ["osascript", "-l", "JavaScript", "-e", script],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        return None
+    try:
+        window_id = int(completed.stdout.strip())
+    except ValueError:
+        return None
+    return window_id if window_id > 0 else None
+
+
+def get_state_result(args: argparse.Namespace, restore: bool = False) -> dict:
+    last_error = None
+    for attempt in range(3):
+        extra = ["--no-screenshot"]
+        if restore or attempt > 0:
+            extra.insert(0, "--restore-window")
+        try:
+            return run_json(app_command(args, "get-app-state", *extra))
+        except RuntimeError as error:
+            last_error = error
+            if "window_not_focused" not in str(error) and "window_not_found" not in str(error):
+                raise
+            activate_reader(args.app)
+            time.sleep(args.retry_seconds)
+    raise RuntimeError(f"Reader window remained unavailable: {last_error}")
+
+
+def get_state(args: argparse.Namespace, restore: bool = False) -> State:
+    deadline = time.monotonic() + max(0.0, args.reader_ready_seconds)
+    last_error: RuntimeError | None = None
+    while True:
+        result = get_state_result(args, restore=restore)
+        try:
+            return state_from_result(result)
+        except RuntimeError as error:
+            last_error = error
+            tree = result.get("snapshot", {}).get("treeText", "")
+            if "HTML content 투데이 | 밀리의서재" in tree or "0%에서 이어서 읽어볼까요?" in tree:
+                raise RuntimeError(
+                    "Millie's Library is showing its home screen; open the book in one-page reader mode"
+                ) from error
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    "Reader page counter did not become available within "
+                    f"{args.reader_ready_seconds:.1f}s; close menus and keep the book open "
+                    f"in one-page mode (last error: {last_error})"
+                ) from error
+            time.sleep(max(args.retry_seconds, 0.15))
+
+
+def press_key(args: argparse.Namespace, key: str) -> State:
+    last_error = None
+    for attempt in range(4):
+        if attempt > 0:
+            activate_reader(args.app)
+            time.sleep(0.04 * attempt)
+        extra = ["--key", key, "--no-screenshot"]
+        if attempt > 0:
+            extra.insert(0, "--restore-window")
+        try:
+            result = run_json(app_command(args, "press-key", *extra))
+            try:
+                return state_from_result(result)
+            except RuntimeError as error:
+                if "page counter was not found" not in str(error):
+                    raise
+                return get_state(args, restore=attempt > 0)
+        except RuntimeError as error:
+            last_error = error
+            if "window_not_focused" not in str(error) and "window_not_found" not in str(error):
+                raise
+    raise RuntimeError(f"Reader could not retain keyboard focus: {last_error}")
+
+
+def focus_reader(args: argparse.Namespace) -> None:
+    activate_reader(args.app)
+    # Keyboard delivery can restore the window itself. Avoid clicking the page body:
+    # Millie's reader occasionally treats a center click as an exit/navigation action.
+
+
+def close_table_of_contents(args: argparse.Namespace) -> None:
+    result = get_state_result(args, restore=True)
+    tree = result.get("snapshot", {}).get("treeText", "")
+    if "heading 목차" not in tree:
+        return
+    menu_tree = tree.split("heading 목차", 1)[1]
+    close_buttons = re.findall(r"(?m)^\s*(\d+)\s+button 닫기\s*$", menu_tree)
+    if not close_buttons:
+        raise RuntimeError("The table of contents is open but its close button was not found")
+    run_json(
+        app_command(
+            args,
+            "click",
+            "--element-index",
+            close_buttons[0],
+            "--no-screenshot",
+        )
+    )
+
+
+def wait_for_counter(
+    args: argparse.Namespace,
+    expected: int,
+    expected_total: int | None = None,
+    initial_state: State | None = None,
+) -> State:
+    last_seen = None
+    for attempt in range(args.max_refreshes):
+        state = initial_state if attempt == 0 and initial_state is not None else get_state(args)
+        current, total, _ = state
+        last_seen = (current, total)
+        if current == expected and (expected_total is None or total == expected_total):
+            return state
+        time.sleep(args.retry_seconds)
+    raise RuntimeError(
+        f"Reader did not reach the expected counter {expected}; last seen={last_seen}"
+    )
+
+
+def advance_without_known_total(
+    args: argparse.Namespace,
+    current_page: int,
+) -> State | None:
+    """Advance a slider-only reader, returning None after two verified stalls."""
+    expected = current_page + 1
+    last_seen: tuple[int, int] | None = None
+    for delivery in range(2):
+        if delivery:
+            activate_reader(args.app)
+            time.sleep(0.12)
+        extra = ["--key", "Right", "--no-screenshot"]
+        if delivery:
+            extra.insert(0, "--restore-window")
+        try:
+            initial_result = run_json(app_command(args, "press-key", *extra))
+        except RuntimeError as error:
+            if "window_not_focused" not in str(error) and "window_not_found" not in str(error):
+                raise
+            activate_reader(args.app)
+            time.sleep(args.retry_seconds)
+            initial_result = run_json(
+                app_command(
+                    args,
+                    "press-key",
+                    "--restore-window",
+                    "--key",
+                    "Right",
+                    "--no-screenshot",
+                )
+            )
+
+        for attempt in range(args.max_refreshes):
+            result = initial_result if attempt == 0 else get_state_result(
+                args, restore=delivery > 0
+            )
+            try:
+                state = state_from_result(result)
+            except RuntimeError as error:
+                if "page counter was not found" not in str(error):
+                    raise
+                time.sleep(args.retry_seconds)
+                continue
+
+            observed_page, observed_total, _ = state
+            last_seen = (observed_page, observed_total)
+            if observed_page == expected:
+                return state
+            if observed_page > expected:
+                raise RuntimeError(
+                    f"Reader skipped a page: expected {expected}, observed {observed_page}"
+                )
+            if observed_page < current_page:
+                raise RuntimeError(
+                    f"Reader moved backwards: current {current_page}, observed {observed_page}"
+                )
+            time.sleep(args.retry_seconds)
+
+    print(
+        f"final_page_detected={current_page} last_seen={last_seen} verified_stalls=2",
+        flush=True,
+    )
+    return None
+
+
+def rewind_and_warm_reader(args: argparse.Namespace) -> State:
+    close_table_of_contents(args)
+    focus_reader(args)
+    current, total, title = get_state(args, restore=True)
+    rewind_start = current
+
+    while current > 1:
+        expected = current - 1
+        pressed_state = press_key(args, "Left")
+        current, total, title = wait_for_counter(
+            args, expected, initial_state=pressed_state
+        )
+        if current <= 3 or current % 10 == 0:
+            total_label = str(total) if total > 0 else "?"
+            print(f"rewind={current}/{total_label}", flush=True)
+
+    if rewind_start > 1:
+        print(f"rewound={rewind_start}->1", flush=True)
+
+    # One round trip stabilizes Millie's final pagination without fixed sleeps.
+    if total > 1:
+        right_state = press_key(args, "Right")
+        _, warmed_total, _ = wait_for_counter(args, 2, initial_state=right_state)
+        left_state = press_key(args, "Left")
+        current, total, title = wait_for_counter(
+            args, 1, initial_state=left_state
+        )
+        # Millie can publish a revised total only after returning to page 1.
+        # Accept the new total here; capture will lock and verify it from page 1 onward.
+        if total != warmed_total:
+            print(f"pagination_total_updated={warmed_total}->{total}", flush=True)
+    return current, total, title
+
+
+def normalize_screenshot(
+    source: Path,
+    destination: Path,
+    target_width: int,
+    target_height: int,
+    trim_ratio: float,
+) -> None:
+    with Image.open(source) as opened:
+        image = opened.convert("RGB")
+        trim = max(1, round(image.height * trim_ratio))
+        if image.height <= trim * 2:
+            raise RuntimeError("Screenshot is too small for UI trimming")
+        image = image.crop((0, trim, image.width, image.height - trim))
+        scale = min(target_width / image.width, target_height / image.height)
+        resized = image.resize(
+            (max(1, round(image.width * scale)), max(1, round(image.height * scale))),
+            Image.Resampling.LANCZOS,
+        )
+        canvas = Image.new("RGB", (target_width, target_height), "white")
+        left = (target_width - resized.width) // 2
+        top = (target_height - resized.height) // 2
+        canvas.paste(resized, (left, top))
+        canvas.save(destination, format="PNG", compress_level=1)
+
+
+def image_hash(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as image_file:
+        for chunk in iter(lambda: image_file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def capture_raw(args: argparse.Namespace, destination: Path) -> State | None:
+    destination.unlink(missing_ok=True)
+    if args.direct_capture:
+        completed = subprocess.run(
+            [
+                "/usr/sbin/screencapture",
+                "-x",
+                "-o",
+                "-t",
+                args.raw_format,
+                "-l",
+                str(args.cg_window_id),
+                str(destination),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if completed.returncode == 0 and destination.is_file() and destination.stat().st_size:
+            return None
+        if args.app_pid:
+            refreshed_window_id = resolve_cg_window_id(args.app_pid)
+            if refreshed_window_id and refreshed_window_id != args.cg_window_id:
+                args.cg_window_id = refreshed_window_id
+                return capture_raw(args, destination)
+        args.direct_capture = False
+        print("capture_backend=orca-fallback", flush=True)
+
+    result = run_json(app_command(args, "get-app-state"))
+    screenshot = Path(result.get("screenshot", {}).get("path", ""))
+    if not screenshot.is_file():
+        raise RuntimeError("Neither direct window capture nor Orca returned a screenshot")
+    shutil.copy2(screenshot, destination)
+    return state_from_result(result)
+
+
+def capture_distinct_raw(
+    args: argparse.Namespace,
+    raw_path: Path,
+    expected_page: int,
+    expected_total: int | None,
+    previous_raw_hash: str | None,
+) -> str:
+    last_hash = None
+    for attempt in range(args.max_refreshes):
+        observed_state = capture_raw(args, raw_path)
+        if observed_state is not None:
+            current, total, _ = observed_state
+            if current != expected_page or (
+                expected_total is not None and total != expected_total
+            ):
+                raise RuntimeError(
+                    f"Unexpected reader counter during capture: {current}/{total or '?'}; "
+                    f"expected {expected_page}/{expected_total or '?'}"
+                )
+        last_hash = image_hash(raw_path)
+        if previous_raw_hash is None or last_hash != previous_raw_hash:
+            return last_hash
+        if attempt == 1:
+            current, total, _ = get_state(args)
+            if current != expected_page or (
+                expected_total is not None and total != expected_total
+            ):
+                raise RuntimeError(
+                    f"Reader moved unexpectedly during capture: {current}/{total or '?'}"
+                )
+        time.sleep(args.retry_seconds)
+    raise RuntimeError(
+        f"Page {expected_page} remained identical to the previous page after "
+        f"{args.max_refreshes} refreshes (hash={last_hash})"
+    )
+
+
+def normalize_and_hash(
+    raw_path: Path, output_path: Path, args: argparse.Namespace
+) -> str:
+    normalize_screenshot(
+        raw_path,
+        output_path,
+        args.target_width,
+        args.target_height,
+        args.trim_ratio,
+    )
+    return image_hash(output_path)
+
+
+def write_manifest(path: Path, payload: dict) -> None:
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    temporary.replace(path)
+
+
+def check_finished_workers(jobs: dict[int, Future[str]]) -> None:
+    for future in jobs.values():
+        if future.done():
+            future.result()
+
+
+def main() -> None:
+    args = parse_args()
+    args.cg_window_id = args.cg_window_id or (
+        resolve_cg_window_id(args.app_pid) if args.app_pid else None
+    )
+    args.direct_capture = args.cg_window_id is not None
+    print(
+        f"window_ids=accessibility:{args.window_id} core_graphics:{args.cg_window_id or 'unavailable'} "
+        f"capture_backend={'core-graphics-fast' if args.direct_capture else 'orca-fallback'}",
+        flush=True,
+    )
+    output_dir = args.output_dir.resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    state = rewind_and_warm_reader(args)
+    current, total, title = state
+    if current != 1:
+        raise RuntimeError(f"Reader rewind failed; current page is {current}")
+    known_total = total if total > 0 else None
+    end_page = args.end_page or known_total
+    if end_page is not None and end_page < 1:
+        raise SystemExit(f"Invalid end page {end_page}")
+    if known_total is not None and end_page is not None and end_page > known_total:
+        raise SystemExit(f"Invalid end page {end_page}; total={known_total}")
+
+    if args.status_file:
+        initial_message = (
+            f"전체 {end_page}쪽을 확인했습니다. 고속 캡처를 시작합니다."
+            if end_page is not None
+            else "현재 쪽수를 확인했습니다. 마지막 쪽까지 고속 캡처합니다."
+        )
+        update_status(
+            args.status_file.expanduser(),
+            state="running",
+            phase="capture",
+            message=initial_message,
+            book_title=title,
+            current=0,
+            total=end_page or 0,
+            rate=0.0,
+            phase_progress=0.0 if end_page is not None else None,
+        )
+
+    manifest = {
+        "app": args.app,
+        "window_id": args.window_id,
+        "cg_window_id": args.cg_window_id,
+        "title": title,
+        "start_page": 1,
+        "end_page": end_page,
+        "total_pages": known_total,
+        "target_size": [args.target_width, args.target_height],
+        "capture_mode": "core-graphics-fast" if args.direct_capture else "orca-fallback",
+        "pages": [],
+    }
+    jobs: dict[int, Future[str]] = {}
+    output_paths: dict[int, Path] = {}
+    previous_raw_hash = None
+    started = time.perf_counter()
+
+    with tempfile.TemporaryDirectory(prefix="millie-fast-capture-") as temporary:
+        raw_dir = Path(temporary)
+        with ThreadPoolExecutor(max_workers=args.workers) as executor:
+            page = 1
+            while True:
+                current, observed_total, title = state
+                if current != page or (
+                    known_total is not None and observed_total != known_total
+                ):
+                    raise RuntimeError(
+                        f"Unexpected reader state {current}/{observed_total or '?'}; "
+                        f"expected {page}/{known_total or '?'}"
+                    )
+
+                raw_path = raw_dir / f"raw_{page:04d}.{args.raw_format}"
+                output_path = output_dir / f"page_{page:04d}.png"
+                previous_raw_hash = capture_distinct_raw(
+                    args,
+                    raw_path,
+                    page,
+                    known_total,
+                    previous_raw_hash,
+                )
+                output_paths[page] = output_path
+                jobs[page] = executor.submit(
+                    normalize_and_hash, raw_path, output_path, args
+                )
+                check_finished_workers(jobs)
+
+                elapsed = max(time.perf_counter() - started, 0.001)
+                capture_rate = page / elapsed
+                print(
+                    f"captured={page}/{end_page or '?'} rate={capture_rate:.2f}pps "
+                    f"file={output_path.name}",
+                    flush=True,
+                )
+                if args.status_file:
+                    update_status(
+                        args.status_file.expanduser(),
+                        state="running",
+                        phase="capture",
+                        message=f"{page}쪽을 안전하게 저장했습니다.",
+                        current=page,
+                        total=end_page or 0,
+                        rate=round(capture_rate, 3),
+                        phase_progress=(page / end_page) if end_page else None,
+                        add_history=page == 1 or page == end_page or page % 10 == 0,
+                    )
+
+                if end_page is not None and page >= end_page:
+                    break
+
+                if known_total is not None:
+                    pressed_state = press_key(args, "Right")
+                    state = wait_for_counter(
+                        args, page + 1, known_total, initial_state=pressed_state
+                    )
+                else:
+                    next_state = advance_without_known_total(args, page)
+                    if next_state is None:
+                        end_page = page
+                        known_total = page
+                        manifest["end_page"] = end_page
+                        manifest["total_pages"] = end_page
+                        if args.status_file:
+                            update_status(
+                                args.status_file.expanduser(),
+                                state="running",
+                                phase="capture",
+                                message=f"마지막 {end_page}쪽까지 캡처했습니다.",
+                                current=end_page,
+                                total=end_page,
+                                rate=round(capture_rate, 3),
+                                phase_progress=1.0,
+                            )
+                        break
+                    state = next_state
+                page += 1
+
+            if end_page is None:
+                raise RuntimeError("Capture ended without determining the final page")
+            for page in range(1, end_page + 1):
+                manifest["pages"].append(
+                    {
+                        "reader_page": page,
+                        "file": output_paths[page].name,
+                        "sha256": jobs[page].result(),
+                    }
+                )
+
+    write_manifest(output_dir / "capture_manifest.json", manifest)
+    final_files = sorted(output_dir.glob("page_*.png"))
+    if len(final_files) != end_page or not (output_dir / f"page_{end_page:04d}.png").is_file():
+        raise RuntimeError(
+            f"Capture completeness check failed: files={len(final_files)}, "
+            f"expected={end_page}, last=page_{end_page:04d}.png"
+        )
+    elapsed = max(time.perf_counter() - started, 0.001)
+    print(f"output_dir={output_dir}")
+    print(f"captured_pages={len(manifest['pages'])}")
+    print(f"capture_seconds={elapsed:.2f}")
+    print(f"capture_rate={len(manifest['pages']) / elapsed:.2f}pps")
+
+
+if __name__ == "__main__":
+    main()
