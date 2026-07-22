@@ -29,7 +29,7 @@ def now_iso() -> str:
 
 def default_status() -> dict[str, Any]:
     return {
-        "schema_version": 4,
+        "schema_version": 5,
         "state": "idle",
         "phase": "preparing",
         "output_mode": "all",
@@ -40,6 +40,7 @@ def default_status() -> dict[str, Any]:
         "rate": 0.0,
         "phase_progress": None,
         "started_at": None,
+        "finished_at": None,
         "updated_at": now_iso(),
         "run_dir": "",
         "pdf_path": "",
@@ -57,9 +58,12 @@ def load_status(path: Path) -> dict[str, Any]:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         payload = default_status()
-    base = default_status()
+    defaults = default_status()
+    base = defaults.copy()
     base.update(payload)
-    base["schema_version"] = default_status()["schema_version"]
+    base["schema_version"] = defaults["schema_version"]
+    if base.get("state") in {"complete", "error", "stopped"} and not base.get("finished_at"):
+        base["finished_at"] = base.get("updated_at")
     if not isinstance(base.get("history"), list):
         base["history"] = []
     return base
@@ -94,9 +98,14 @@ def update_status(
     if requested_phase is not None and requested_phase != previous_phase and changes.get("phase_progress") is None:
         payload["phase_progress"] = 0.0
 
+    timestamp = now_iso()
     if reset and not payload.get("started_at"):
-        payload["started_at"] = now_iso()
-    payload["updated_at"] = now_iso()
+        payload["started_at"] = timestamp
+    if payload.get("state") in {"complete", "error", "stopped"} and not payload.get(
+        "finished_at"
+    ):
+        payload["finished_at"] = timestamp
+    payload["updated_at"] = timestamp
 
     changed = (
         payload.get("phase") != previous_phase
@@ -137,6 +146,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rate", type=float)
     parser.add_argument("--phase-progress", type=float)
     parser.add_argument("--started-at")
+    parser.add_argument("--finished-at")
     parser.add_argument("--run-dir")
     parser.add_argument("--pdf-path")
     parser.add_argument("--markdown-path")
@@ -160,6 +170,7 @@ def main() -> None:
         "rate": args.rate,
         "phase_progress": args.phase_progress,
         "started_at": args.started_at,
+        "finished_at": args.finished_at,
         "run_dir": args.run_dir,
         "pdf_path": args.pdf_path,
         "markdown_path": args.markdown_path,
