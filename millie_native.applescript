@@ -163,6 +163,13 @@ on closeVisibleMenu(processRef)
 	return false
 end closeVisibleMenu
 
+on basicSnapshot(processRef)
+	tell application "System Events"
+		set processID to unix id of processRef
+		return my joinOutputLines({processID as text, "-"})
+	end tell
+end basicSnapshot
+
 on run argv
 	if (count of argv) < 2 then error "사용법: millie_native.applescript ACTION BUNDLE_ID [KEY_CODE]"
 	set actionName to item 1 of argv
@@ -171,21 +178,22 @@ on run argv
 		set matchingProcesses to application processes whose bundle identifier is bundleID
 		if (count of matchingProcesses) is 0 then error "밀리의서재 앱이 실행 중이 아닙니다."
 		set processRef to item 1 of matchingProcesses
-		if actionName is "focus" or actionName is "press" or actionName is "close" then
+		if actionName is "focus" or actionName is "press" or actionName is "press-fast" or actionName is "close" then
 			if frontmost of processRef is false then
 				set frontmost of processRef to true
 				delay 0.02
 			end if
 		end if
-		if actionName is "press" then
+		if actionName is "press" or actionName is "press-fast" then
 			if (count of argv) < 3 then error "키 코드가 필요합니다."
 			set requestedKeyCode to item 3 of argv as integer
 			key code requestedKeyCode
-			delay 0.003
+			if actionName is "press" then delay 0.003
 		else if actionName is "close" then
 			my closeVisibleMenu(processRef)
 		end if
 		if actionName is "tree" then return my snapshotProcess(processRef)
+		if actionName is "press-fast" then return my basicSnapshot(processRef)
 		return my counterSnapshot(processRef)
 	end tell
 end run
