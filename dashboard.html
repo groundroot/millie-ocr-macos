@@ -1254,7 +1254,7 @@
   <dialog id="resetDialog" class="stop-dialog" aria-labelledby="resetDialogTitle" aria-describedby="resetDialogDescription">
     <div class="dialog-body">
       <h2 id="resetDialogTitle">페이지를 리셋할까요?</h2>
-      <p id="resetDialogDescription">진행률과 최근 기록을 초기 대기 화면으로 되돌립니다. 이미 저장된 이미지와 PDF·Markdown·EPUB 파일은 삭제하지 않습니다.</p>
+      <p id="resetDialogDescription">진행률과 최근 기록을 초기 대기 화면으로 되돌립니다. 이미 저장된 이미지와 PDF·Markdown·EPUB 파일 및 이어서 작업 정보는 삭제하지 않습니다.</p>
     </div>
     <div class="dialog-actions">
       <button id="cancelReset" class="dialog-button" type="button">취소</button>
@@ -1434,7 +1434,7 @@
       const canReset = status.state === "stopped" && !resetRequestPending;
       $("resetPage").disabled = !canReset;
       $("resetLabel").textContent = resetRequestPending ? "리셋 중" : "페이지 리셋";
-      $("resetHint").textContent = status.state === "stopped" ? "결과 파일은 그대로 보존됩니다" : "작업을 중지한 뒤 사용할 수 있습니다";
+      $("resetHint").textContent = status.state === "stopped" ? "다음 실행에서 이어서 작업할 수 있습니다" : "작업을 중지한 뒤 사용할 수 있습니다";
       renderPhases(status, phases);
       renderTimeline(status);
     }

@@ -31,6 +31,7 @@ fi
 for file in \
   run_millie_ocr.sh \
   status_store.py \
+  resume_state.py \
   dashboard_server.py \
   dashboard.html \
   install_dashboard_agent.py \
@@ -54,6 +55,7 @@ done
 /bin/chmod 755 \
   "$INSTALL_DIR/run_millie_ocr.sh" \
   "$INSTALL_DIR/status_store.py" \
+  "$INSTALL_DIR/resume_state.py" \
   "$INSTALL_DIR/dashboard_server.py" \
   "$INSTALL_DIR/install_dashboard_agent.py" \
   "$INSTALL_DIR/capture_millie_pages_stable.py" \

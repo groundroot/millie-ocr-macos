@@ -103,7 +103,7 @@ def terminate_and_record(status_file: Path, pid: int) -> None:
         update_status(
             status_file,
             state="stopped",
-            message="사용자가 작업을 중지했습니다.",
+            message="사용자가 작업을 중지했습니다. 다음 실행에서 저장된 페이지 이후부터 이어갈 수 있습니다.",
             error="",
             worker_pid=0,
         )
@@ -248,8 +248,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 )
                 return
             stop_request = self.server.status_file.with_name("stop.request")
+            lock_dir = self.server.status_file.with_name("active-run.lock")
             try:
                 stop_request.unlink(missing_ok=True)
+                (lock_dir / "pid").unlink(missing_ok=True)
+                lock_dir.rmdir()
+            except FileNotFoundError:
+                pass
             except OSError as error:
                 self.send_json(
                     {"ok": False, "error": str(error)},
