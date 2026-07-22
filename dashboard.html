@@ -998,6 +998,29 @@
     .stop-action small { font-size: 9px; }
     .stop-icon { font-size: 14px; }
 
+    .control-stack {
+      display: grid;
+      gap: 8px;
+    }
+
+    .reset-action:not(:disabled) {
+      color: #0066cc;
+      background: rgba(0,122,255,.09);
+    }
+
+    .reset-action:hover:not(:disabled) {
+      background: rgba(0,122,255,.15);
+    }
+
+    .reset-action:focus-visible {
+      outline-color: rgba(0,122,255,.28);
+    }
+
+    .dialog-button.primary {
+      color: var(--accent);
+      font-weight: 700;
+    }
+
     .actions { gap: 8px; }
     .action {
       min-height: 58px;
@@ -1181,10 +1204,16 @@
 
         <section class="rail-section">
           <div class="section-head"><h2>작업 제어</h2><span class="eyebrow">CONTROL</span></div>
-          <button id="stopJob" class="stop-action" type="button" disabled>
-            <span><strong id="stopLabel">작업 중지</strong><small id="stopHint">작업 중에만 사용할 수 있습니다</small></span>
-            <span class="stop-icon" aria-hidden="true">■</span>
-          </button>
+          <div class="control-stack">
+            <button id="stopJob" class="stop-action" type="button" disabled>
+              <span><strong id="stopLabel">작업 중지</strong><small id="stopHint">작업 중에만 사용할 수 있습니다</small></span>
+              <span class="stop-icon" aria-hidden="true">■</span>
+            </button>
+            <button id="resetPage" class="stop-action reset-action" type="button" disabled>
+              <span><strong id="resetLabel">페이지 리셋</strong><small id="resetHint">작업을 중지한 뒤 사용할 수 있습니다</small></span>
+              <span class="stop-icon" aria-hidden="true">↺</span>
+            </button>
+          </div>
         </section>
 
         <section class="rail-section">
@@ -1222,6 +1251,17 @@
     </div>
   </dialog>
 
+  <dialog id="resetDialog" class="stop-dialog" aria-labelledby="resetDialogTitle" aria-describedby="resetDialogDescription">
+    <div class="dialog-body">
+      <h2 id="resetDialogTitle">페이지를 리셋할까요?</h2>
+      <p id="resetDialogDescription">진행률과 최근 기록을 초기 대기 화면으로 되돌립니다. 이미 저장된 이미지와 PDF·Markdown·EPUB 파일은 삭제하지 않습니다.</p>
+    </div>
+    <div class="dialog-actions">
+      <button id="cancelReset" class="dialog-button" type="button">취소</button>
+      <button id="confirmReset" class="dialog-button primary" type="button">페이지 리셋</button>
+    </div>
+  </dialog>
+
   <script>
     const allPhases = [
       ["preparing", "준비"],
@@ -1245,6 +1285,7 @@
     let latestStatus = null;
     let lastFetch = Date.now();
     let stopRequestPending = false;
+    let resetRequestPending = false;
 
     const $ = id => document.getElementById(id);
 
@@ -1390,6 +1431,10 @@
       $("stopJob").disabled = !canStop;
       $("stopLabel").textContent = status.state === "stopping" || stopRequestPending ? "중지 요청 중" : "작업 중지";
       $("stopHint").textContent = status.state === "running" ? "현재 작업을 안전하게 종료합니다" : status.state === "stopping" ? "처리 중인 프로세스를 종료하고 있습니다" : "작업 중에만 사용할 수 있습니다";
+      const canReset = status.state === "stopped" && !resetRequestPending;
+      $("resetPage").disabled = !canReset;
+      $("resetLabel").textContent = resetRequestPending ? "리셋 중" : "페이지 리셋";
+      $("resetHint").textContent = status.state === "stopped" ? "결과 파일은 그대로 보존됩니다" : "작업을 중지한 뒤 사용할 수 있습니다";
       renderPhases(status, phases);
       renderTimeline(status);
     }
@@ -1452,6 +1497,31 @@
         $("message").textContent = error.message;
       } finally {
         stopRequestPending = false;
+        refresh();
+      }
+    });
+
+    $("resetPage").addEventListener("click", () => {
+      if (!$("resetPage").disabled) $("resetDialog").showModal();
+    });
+    $("cancelReset").addEventListener("click", () => $("resetDialog").close());
+    $("confirmReset").addEventListener("click", async () => {
+      $("resetDialog").close();
+      resetRequestPending = true;
+      if (latestStatus) render(latestStatus);
+      try {
+        const response = await fetch("/api/reset", {
+          method: "POST",
+          headers: {"Content-Type": "application/json", "X-Millie-OCR": "reset"},
+          body: "{}"
+        });
+        const payload = await response.json();
+        if (!response.ok || !payload.ok) throw new Error(payload.error || "페이지를 리셋하지 못했습니다.");
+        render(payload.status);
+      } catch (error) {
+        $("message").textContent = error.message;
+      } finally {
+        resetRequestPending = false;
         refresh();
       }
     });
