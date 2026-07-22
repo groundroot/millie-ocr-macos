@@ -462,8 +462,16 @@ def capture_distinct_raw(
 def audit_counter(
     args: argparse.Namespace, expected_page: int, expected_total: int | None
 ) -> None:
+    """Verify a burst boundary and recover one delayed or missed key delivery.
+
+    Millie's accessibility counter can trail the rendered page briefly.  Give it
+    a wider polling window before assuming a key was dropped.  If it still shows
+    the preceding page, deliver one replacement key; an overshoot is restored
+    safely with Left before capture continues.
+    """
     last_seen: tuple[int, int] | None = None
-    for attempt in range(3):
+    audit_refreshes = min(max(8, args.render_confirmations * 2), args.max_refreshes)
+    for attempt in range(audit_refreshes):
         current, total, _ = get_state(args)
         last_seen = (current, total)
         if current == expected_page and (
@@ -474,8 +482,45 @@ def audit_counter(
             expected_total is not None and total not in {0, expected_total}
         ):
             break
-        if attempt < 2:
+        if attempt + 1 < audit_refreshes:
             time.sleep(max(args.retry_seconds, 0.05))
+
+    observed_page, observed_total = last_seen or (0, 0)
+    if observed_page == expected_page - 1 and (
+        expected_total is None or observed_total in {0, expected_total}
+    ):
+        press_key_fast(args, "Right")
+        recovery_refreshes = min(max(10, audit_refreshes), args.max_refreshes)
+        for attempt in range(recovery_refreshes):
+            current, total, _ = get_state(args)
+            last_seen = (current, total)
+            total_matches = expected_total is None or total == expected_total
+            if current == expected_page and total_matches:
+                print(
+                    f"counter_audit_recovered={expected_page} action=redeliver-right",
+                    flush=True,
+                )
+                return
+            if current == expected_page + 1 and total_matches:
+                restored_state = press_key(args, "Left")
+                wait_for_counter(
+                    args,
+                    expected_page,
+                    expected_total=expected_total,
+                    initial_state=restored_state,
+                )
+                print(
+                    f"counter_audit_recovered={expected_page} action=restore-left",
+                    flush=True,
+                )
+                return
+            if current > expected_page + 1 or (
+                expected_total is not None and total not in {0, expected_total}
+            ):
+                break
+            if attempt + 1 < recovery_refreshes:
+                time.sleep(max(args.retry_seconds, 0.05))
+
     observed_page, observed_total = last_seen or (0, 0)
     raise RuntimeError(
         f"Counter audit failed: observed {observed_page}/{observed_total or '?'}, "
@@ -585,6 +630,13 @@ def main() -> None:
         with ThreadPoolExecutor(max_workers=args.workers) as executor:
             page = 1
             while True:
+                audit_interval = max(1, args.counter_audit_interval)
+                if page > 1 and page % audit_interval == 0:
+                    # Verify the reader reached this page before taking its image.
+                    # This prevents a late page turn from being saved under the
+                    # next page number at a burst boundary.
+                    audit_counter(args, page, known_total)
+
                 raw_path = raw_dir / f"raw_{page:04d}.{args.raw_format}"
                 output_path = output_dir / f"page_{page:04d}.png"
                 captured_hash = capture_distinct_raw(
@@ -614,10 +666,6 @@ def main() -> None:
                         )
                     break
                 previous_raw_hash = captured_hash
-
-                audit_interval = max(1, args.counter_audit_interval)
-                if page > 1 and page % audit_interval == 0:
-                    audit_counter(args, page, known_total)
                 output_paths[page] = output_path
                 jobs[page] = executor.submit(
                     normalize_and_hash, raw_path, output_path, args
