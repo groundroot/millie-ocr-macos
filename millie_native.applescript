@@ -113,18 +113,27 @@ on counterSnapshot(processRef)
 		set outputLines to {processID as text, windowTitle}
 		set allElements to entire contents of frontWindow
 		repeat with elementRef in allElements
+			set roleText to ""
 			set nameText to ""
+			set descriptionText to ""
+			set valueText to ""
+			try
+				set roleText to my cleanText(role of elementRef)
+			end try
 			try
 				set nameText to my cleanText(name of elementRef)
 			end try
-			if nameText contains "/" then
-				set end of outputLines to "role=AXStaticText name=" & nameText & " description= value="
-			else if nameText contains "진행바" then
-				set valueText to my counterValue(elementRef)
-				if valueText is not "" then
-					set maximumText to my counterMaximum(elementRef)
-					set end of outputLines to "role=AXSlider name=" & nameText & " description= value=" & valueText & " maximum=" & maximumText
-				end if
+			try
+				set descriptionText to my cleanText(description of elementRef)
+			end try
+			set valueText to my counterValue(elementRef)
+			set combinedText to nameText & " " & descriptionText & " " & valueText
+			set isCounterCandidate to false
+			if combinedText contains "/" or combinedText contains " of " or combinedText contains "페이지" or combinedText contains "쪽" or combinedText contains "진행" then set isCounterCandidate to true
+			if roleText is "AXSlider" or roleText is "AXProgressIndicator" then set isCounterCandidate to true
+			if isCounterCandidate then
+				set maximumText to my counterMaximum(elementRef)
+				set end of outputLines to "role=" & roleText & " name=" & nameText & " description=" & descriptionText & " value=" & valueText & " maximum=" & maximumText
 			end if
 		end repeat
 		if (count of outputLines) > 2 then return my joinOutputLines(outputLines)
