@@ -131,6 +131,17 @@ on counterSnapshot(processRef)
 			set isCounterCandidate to false
 			if combinedText contains "/" or combinedText contains " of " or combinedText contains "페이지" or combinedText contains "쪽" or combinedText contains "진행" then set isCounterCandidate to true
 			if roleText is "AXSlider" or roleText is "AXProgressIndicator" then set isCounterCandidate to true
+			-- Some Millie reader versions expose "1 / 449" as three sibling
+			-- AXStaticText elements. Keep numeric siblings so Python can rebuild
+			-- the split counter without falling back to a full tree scan.
+			if roleText is "AXStaticText" and isCounterCandidate is false then
+				set numericText to valueText
+				if numericText is "" then set numericText to nameText
+				try
+					numericText as integer
+					set isCounterCandidate to true
+				end try
+			end if
 			if isCounterCandidate then
 				set maximumText to my counterMaximum(elementRef)
 				set end of outputLines to "role=" & roleText & " name=" & nameText & " description=" & descriptionText & " value=" & valueText & " maximum=" & maximumText
