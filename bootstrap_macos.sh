@@ -37,7 +37,7 @@ else
   TEMPORARY_DIR="$(/usr/bin/mktemp -d /tmp/millie-ocr-install.XXXXXX)"
   trap '/bin/rm -rf -- "$TEMPORARY_DIR"' EXIT
   REPOSITORY_DIR="$TEMPORARY_DIR/repository"
-  /usr/bin/git clone --depth 1 https://github.com/groundroot/millie-ocr-macos.git "$REPOSITORY_DIR"
+  /usr/bin/git clone --depth 1 https://github.com/groundroot/MyBookOCR.git "$REPOSITORY_DIR"
 fi
 
 stage "4/5" "앱과 대시보드를 설치합니다."
