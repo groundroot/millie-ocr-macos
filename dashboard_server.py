@@ -131,6 +131,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args) -> None:
         return
 
+    def is_remote_request(self) -> bool:
+        host = self.headers.get("Host", "").split(":", 1)[0].strip("[]").lower()
+        return bool(
+            self.headers.get("Tailscale-User-Login")
+            or self.headers.get("Tailscale-User-Name")
+            or host not in {"127.0.0.1", "localhost", "::1"}
+        )
+
     def send_bytes(self, body: bytes, content_type: str, status: int = 200) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
@@ -174,6 +182,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/api/open":
+            if self.is_remote_request():
+                self.send_json(
+                    {"ok": False, "error": "외부 조회 화면에서는 Mac의 파일을 열 수 없습니다."},
+                    HTTPStatus.FORBIDDEN,
+                )
+                return
             target = parse_qs(parsed.query).get("target", [""])[0]
             status_payload = load_status(self.server.status_file)
             key_map = {
@@ -205,6 +219,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path not in {"/api/stop", "/api/reset"}:
             self.send_json({"ok": False, "error": "Not found"}, HTTPStatus.NOT_FOUND)
+            return
+
+        if self.is_remote_request():
+            self.send_json(
+                {"ok": False, "error": "외부 링크는 조회 전용입니다."},
+                HTTPStatus.FORBIDDEN,
+            )
             return
 
         action = "stop" if parsed.path == "/api/stop" else "reset"
