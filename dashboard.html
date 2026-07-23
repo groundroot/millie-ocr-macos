@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="icon" href="data:,">
-  <title>밀리 OCR 작업실</title>
+  <title>마이북 작업실</title>
   <style>
     :root {
       color-scheme: light;
@@ -1008,6 +1008,19 @@
       background: rgba(0,122,255,.09);
     }
 
+    .resume-action:not(:disabled) {
+      color: #248a3d;
+      background: rgba(52,199,89,.11);
+    }
+
+    .resume-action:hover:not(:disabled) {
+      background: rgba(52,199,89,.18);
+    }
+
+    .resume-action:focus-visible {
+      outline-color: rgba(52,199,89,.28);
+    }
+
     .reset-action:hover:not(:disabled) {
       background: rgba(0,122,255,.15);
     }
@@ -1310,7 +1323,7 @@
           <svg viewBox="0 0 24 24" fill="none"><path d="M7 4.5h7l3 3V19a1.5 1.5 0 0 1-1.5 1.5h-8A1.5 1.5 0 0 1 6 19V6a1.5 1.5 0 0 1 1-1.42Z" stroke-width="1.6" stroke-linejoin="round"/><path d="M14 4.5V8h3.5M9 11h6M9 14h6M9 17h4" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </div>
         <div class="brand-copy">
-          <h1>밀리 OCR</h1>
+          <h1>마이북</h1>
           <p class="app-subtitle">이 Mac에서 안전하게 처리하는 작업 대시보드</p>
           <div class="connection"><div class="eyebrow"><span id="liveDot" class="live-dot"></span><span id="connectionText">로컬 상태 연결됨</span></div></div>
         </div>
@@ -1326,7 +1339,7 @@
         <div class="status-line">
           <div id="phaseLabel" class="phase-label">대기</div>
           <div id="bookTitle" class="book-title">새 책을 기다리는 중</div>
-          <p id="message" class="message" aria-live="polite">단축어에서 ‘밀리 OCR’을 실행하면 이 화면에서 진행 상황을 바로 확인할 수 있습니다.</p>
+          <p id="message" class="message" aria-live="polite">‘마이북’을 실행하면 이 화면에서 진행 상황을 바로 확인할 수 있습니다.</p>
           <div id="captureWarning" class="capture-warning" role="status" aria-live="polite">
             <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3 2.8 19h18.4L12 3Z" stroke-width="1.8" stroke-linejoin="round"/><path d="M12 8v5" stroke-width="1.8" stroke-linecap="round"/><path d="M12 16.7h.01" stroke-width="2.4" stroke-linecap="round"/></svg>
             <div><strong>캡처 중에는 Mac을 조작하지 마세요</strong><span>마우스·키보드 입력이나 다른 앱 전환은 페이지 이동을 방해할 수 있습니다. 캡처가 끝나면 이 안내는 자동으로 사라집니다.</span></div>
@@ -1365,6 +1378,10 @@
             <button id="stopJob" class="stop-action" type="button" disabled>
               <span><strong id="stopLabel">작업 중지</strong><small id="stopHint">작업 중에만 사용할 수 있습니다</small></span>
               <span class="stop-icon" aria-hidden="true">■</span>
+            </button>
+            <button id="resumeJob" class="stop-action resume-action" type="button" disabled>
+              <span><strong id="resumeLabel">작업 재개</strong><small id="resumeHint">중지된 작업이 있을 때 사용할 수 있습니다</small></span>
+              <span class="stop-icon" aria-hidden="true">▶</span>
             </button>
             <button id="resetPage" class="stop-action reset-action" type="button" disabled>
               <span><strong id="resetLabel">페이지 리셋</strong><small id="resetHint">작업을 중지한 뒤 사용할 수 있습니다</small></span>
@@ -1448,7 +1465,9 @@
     let latestStatus = null;
     let lastFetch = Date.now();
     let stopRequestPending = false;
+    let resumeRequestPending = false;
     let resetRequestPending = false;
+    let controlSignature = "";
 
     const $ = id => document.getElementById(id);
     document.body.classList.toggle("remote-view", remoteView);
@@ -1546,6 +1565,24 @@
       return node.innerHTML;
     }
 
+    function renderControls(status, force = false) {
+      const signature = [status.state, stopRequestPending, resumeRequestPending, resetRequestPending].join(":");
+      if (!force && signature === controlSignature) return;
+      controlSignature = signature;
+      const canStop = status.state === "running" && !stopRequestPending;
+      $("stopJob").disabled = !canStop;
+      $("stopLabel").textContent = status.state === "stopping" || stopRequestPending ? "중지 요청 중" : "작업 중지";
+      $("stopHint").textContent = status.state === "running" ? "현재 작업을 안전하게 종료합니다" : status.state === "stopping" ? "처리 중인 프로세스를 종료하고 있습니다" : "작업 중에만 사용할 수 있습니다";
+      const canResume = status.state === "stopped" && !resumeRequestPending;
+      $("resumeJob").disabled = !canResume;
+      $("resumeLabel").textContent = resumeRequestPending ? "재개 요청 중" : "작업 재개";
+      $("resumeHint").textContent = status.state === "stopped" ? "저장된 다음 페이지부터 이어갑니다" : "중지된 작업이 있을 때 사용할 수 있습니다";
+      const canReset = status.state === "stopped" && !resetRequestPending;
+      $("resetPage").disabled = !canReset;
+      $("resetLabel").textContent = resetRequestPending ? "리셋 중" : "페이지 리셋";
+      $("resetHint").textContent = status.state === "stopped" ? "진행 화면만 초기 상태로 되돌립니다" : "작업을 중지한 뒤 사용할 수 있습니다";
+    }
+
     function render(status) {
       latestStatus = status;
       const phase = status.phase || "preparing";
@@ -1609,14 +1646,8 @@
       const paths = {folder: status.run_dir, pdf: status.pdf_path, markdown: status.markdown_path, epub: status.epub_path, log: status.log_path};
       document.querySelectorAll(".action").forEach(button => button.disabled = !paths[button.dataset.target]);
       document.querySelector('[data-target="pdf"] small').textContent = status.output_mode === "pdf-only" ? "OCR 없는 이미지 문서" : "검색 가능한 문서";
-      const canStop = status.state === "running" && !stopRequestPending;
-      $("stopJob").disabled = !canStop;
-      $("stopLabel").textContent = status.state === "stopping" || stopRequestPending ? "중지 요청 중" : "작업 중지";
-      $("stopHint").textContent = status.state === "running" ? "현재 작업을 안전하게 종료합니다" : status.state === "stopping" ? "처리 중인 프로세스를 종료하고 있습니다" : "작업 중에만 사용할 수 있습니다";
-      const canReset = status.state === "stopped" && !resetRequestPending;
-      $("resetPage").disabled = !canReset;
-      $("resetLabel").textContent = resetRequestPending ? "리셋 중" : "페이지 리셋";
-      $("resetHint").textContent = status.state === "stopped" ? "다음 실행에서 이어서 작업할 수 있습니다" : "작업을 중지한 뒤 사용할 수 있습니다";
+      if (status.state === "running" && resumeRequestPending) resumeRequestPending = false;
+      renderControls(status);
       renderPhases(status, phases);
       renderTimeline(status);
     }
@@ -1626,7 +1657,6 @@
       $("clock").textContent = completedAt
         ? `완료 ${completedAt.toLocaleString("ko-KR", {year:"numeric", month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit", second:"2-digit"})}`
         : new Date().toLocaleString("ko-KR", {year:"numeric", month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit", second:"2-digit"});
-      if (latestStatus) render(latestStatus);
       const stale = Date.now() - lastFetch > 3500;
       $("liveDot").classList.toggle("stale", stale);
       $("liveDot").classList.toggle("error", latestStatus?.state === "error");
@@ -1672,7 +1702,7 @@
       try {
         const response = await fetch(apiPath("stop"), {
           method: "POST",
-          headers: {"Content-Type": "application/json", "X-Millie-OCR": "stop"},
+          headers: {"Content-Type": "application/json", "X-MyBook": "stop"},
           body: "{}"
         });
         const payload = await response.json();
@@ -1682,6 +1712,32 @@
       } finally {
         stopRequestPending = false;
         refresh();
+      }
+    });
+
+    $("resumeJob").addEventListener("click", async () => {
+      if ($("resumeJob").disabled) return;
+      resumeRequestPending = true;
+      if (latestStatus) renderControls(latestStatus, true);
+      try {
+        const response = await fetch(apiPath("resume"), {
+          method: "POST",
+          headers: {"Content-Type": "application/json", "X-MyBook": "resume"},
+          body: "{}"
+        });
+        const payload = await response.json();
+        if (!response.ok || !payload.ok) throw new Error(payload.error || "작업을 재개하지 못했습니다.");
+        $("message").textContent = payload.message || "작업 재개를 요청했습니다.";
+        setTimeout(() => {
+          if (latestStatus?.state !== "running") {
+            resumeRequestPending = false;
+            if (latestStatus) renderControls(latestStatus, true);
+          }
+        }, 12000);
+      } catch (error) {
+        resumeRequestPending = false;
+        $("message").textContent = error.message;
+        if (latestStatus) renderControls(latestStatus, true);
       }
     });
 
@@ -1696,7 +1752,7 @@
       try {
         const response = await fetch(apiPath("reset"), {
           method: "POST",
-          headers: {"Content-Type": "application/json", "X-Millie-OCR": "reset"},
+          headers: {"Content-Type": "application/json", "X-MyBook": "reset"},
           body: "{}"
         });
         const payload = await response.json();
@@ -1710,7 +1766,7 @@
       }
     });
 
-    render({state:"idle", phase:"preparing", message:"단축어에서 ‘밀리 OCR’을 실행하면 이 화면에서 진행 상황을 바로 확인할 수 있습니다.", book_title:"", current:0, total:0, rate:0, history:[]});
+    render({state:"idle", phase:"preparing", message:"‘마이북’을 실행하면 이 화면에서 진행 상황을 바로 확인할 수 있습니다.", book_title:"", current:0, total:0, rate:0, history:[]});
     refresh();
     setInterval(refresh, 1000);
     setInterval(tick, 1000);

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Atomic status storage shared by the Millie OCR runner and dashboard."""
+"""Atomic status storage shared by the MyBook runner and dashboard."""
 
 from __future__ import annotations
 
@@ -137,7 +137,7 @@ def update_status(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Update the Millie OCR status file")
+    parser = argparse.ArgumentParser(description="Update the MyBook status file")
     parser.add_argument("--file", type=Path, required=True)
     parser.add_argument("--reset", action="store_true")
     parser.add_argument("--state")

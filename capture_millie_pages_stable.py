@@ -44,7 +44,7 @@ State = tuple[int, int, str]
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Capture a Millie's Library book from page 1 at maximum safe speed."
+        description="Capture a Millie's Library book at maximum safe speed."
     )
     parser.add_argument("output_dir", type=Path)
     parser.add_argument("--app", default=DEFAULT_APP)
@@ -63,7 +63,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--retry-seconds", type=float, default=0.02)
     parser.add_argument("--max-refreshes", type=int, default=80)
     parser.add_argument("--reader-ready-seconds", type=float, default=8.0)
-    parser.add_argument("--counter-audit-interval", type=int, default=10)
+    parser.add_argument(
+        "--counter-audit-interval",
+        type=int,
+        default=0,
+        help="Periodic full counter audit interval; 0 uses anomaly-only checks for maximum speed.",
+    )
+    parser.add_argument(
+        "--status-interval",
+        type=float,
+        default=0.8,
+        help="Minimum seconds between dashboard status writes.",
+    )
     parser.add_argument("--render-confirmations", type=int, default=3)
     parser.add_argument("--workers", type=int, default=min(4, max(2, os.cpu_count() or 2)))
     return parser.parse_args()
@@ -81,7 +92,7 @@ def run_native(
         if "-25211" in detail or "보조 접근" in detail or "assistive" in detail.lower():
             raise RuntimeError(
                 "macOS 손쉬운 사용 권한이 필요합니다. '밀리의서재'가 아니라, 시스템 설정 > "
-                "개인정보 보호 및 보안 > 손쉬운 사용에서 '밀리 OCR'을 허용해 주세요. "
+                "개인정보 보호 및 보안 > 손쉬운 사용에서 '마이북'을 허용해 주세요. "
                 "AppleScript 실행 단축어를 사용한다면 '단축어'도 허용해야 합니다."
             )
         raise RuntimeError(detail or "밀리의서재 창을 제어하지 못했습니다.")
@@ -418,7 +429,7 @@ def capture_raw(args: argparse.Namespace, destination: Path) -> State | None:
             return capture_raw(args, destination)
     raise RuntimeError(
         "밀리의서재 창을 캡처하지 못했습니다. 시스템 설정 > 개인정보 보호 및 보안 > "
-        "화면 및 시스템 오디오 녹음에서 '밀리 OCR' 또는 '단축어'를 허용해 주세요."
+        "화면 및 시스템 오디오 녹음에서 '마이북' 또는 '단축어'를 허용해 주세요."
     )
 
 
@@ -510,7 +521,7 @@ def capture_distinct_raw(
 def audit_counter(
     args: argparse.Namespace, expected_page: int, expected_total: int | None
 ) -> None:
-    """Verify a burst boundary and recover one delayed or missed key delivery.
+    """Verify an anomaly or final boundary and recover a missed key delivery.
 
     Millie's accessibility counter can trail the rendered page briefly.  Give it
     a wider polling window before assuming a key was dropped.  If it still shows
@@ -518,7 +529,11 @@ def audit_counter(
     safely with Left before capture continues.
     """
     last_seen: tuple[int, int] | None = None
-    audit_refreshes = min(max(8, args.render_confirmations * 2), args.max_refreshes)
+    # A full accessibility counter read is substantially slower than a window
+    # capture. Two observations are enough at an anomaly/final boundary; if the
+    # reader still reports the preceding page, recover immediately instead of
+    # idling through a long polling window.
+    audit_refreshes = min(max(2, args.render_confirmations // 2), args.max_refreshes)
     for attempt in range(audit_refreshes):
         current, total, _ = get_state(args)
         last_seen = (current, total)
@@ -538,7 +553,7 @@ def audit_counter(
         expected_total is None or observed_total in {0, expected_total}
     ):
         press_key_fast(args, "Right")
-        recovery_refreshes = min(max(10, audit_refreshes), args.max_refreshes)
+        recovery_refreshes = min(max(3, audit_refreshes + 1), args.max_refreshes)
         for attempt in range(recovery_refreshes):
             current, total, _ = get_state(args)
             last_seen = (current, total)
@@ -637,10 +652,14 @@ def main() -> None:
     )
     if args.cg_window_id is None:
         raise RuntimeError("밀리의서재의 화면 캡처 창 번호를 확인하지 못했습니다.")
+    audit_mode = (
+        f"verified-burst-{args.counter_audit_interval}"
+        if args.counter_audit_interval > 0
+        else "adaptive-anomaly-checks"
+    )
     print(
         f"app_pid={args.app_pid} core_graphics_window={args.cg_window_id} "
-        f"capture_backend=core-graphics-fast accessibility=verified-burst-"
-        f"{max(1, args.counter_audit_interval)}",
+        f"capture_backend=core-graphics-fast accessibility={audit_mode}",
         flush=True,
     )
     current, total, title = state
@@ -708,7 +727,8 @@ def main() -> None:
         "total_pages": known_total,
         "target_size": [args.target_width, args.target_height],
         "capture_mode": "core-graphics-verified-burst",
-        "counter_audit_interval": max(1, args.counter_audit_interval),
+        "counter_audit_interval": max(0, args.counter_audit_interval),
+        "status_interval": max(0.05, args.status_interval),
         "pages": [],
     }
     jobs: dict[int, Future[str]] = {}
@@ -722,14 +742,16 @@ def main() -> None:
     }
     previous_raw_hash = None
     started = time.perf_counter()
+    last_status_update = 0.0
+    last_history_page = existing_pages
 
     with tempfile.TemporaryDirectory(prefix="millie-fast-capture-") as temporary:
         raw_dir = Path(temporary)
         with ThreadPoolExecutor(max_workers=args.workers) as executor:
             page = args.start_page
             while end_page is None or page <= end_page:
-                audit_interval = max(1, args.counter_audit_interval)
-                if page > 1 and page % audit_interval == 0:
+                audit_interval = max(0, args.counter_audit_interval)
+                if audit_interval > 0 and page > 1 and page % audit_interval == 0:
                     # Verify the reader reached this page before taking its image.
                     # This prevents a late page turn from being saved under the
                     # next page number at a burst boundary.
@@ -783,7 +805,11 @@ def main() -> None:
                     f"file={output_path.name}",
                     flush=True,
                 )
-                if args.status_file:
+                status_now = time.perf_counter()
+                is_status_milestone = page == 1 or page == end_page
+                status_due = status_now - last_status_update >= max(0.05, args.status_interval)
+                if args.status_file and (is_status_milestone or status_due):
+                    add_history = is_status_milestone or page - last_history_page >= 10
                     update_status(
                         args.status_file.expanduser(),
                         state="running",
@@ -793,8 +819,11 @@ def main() -> None:
                         total=end_page or 0,
                         rate=round(capture_rate, 3),
                         phase_progress=(page / end_page) if end_page else None,
-                        add_history=page == 1 or page == end_page or page % 10 == 0,
+                        add_history=add_history,
                     )
+                    last_status_update = status_now
+                    if add_history:
+                        last_history_page = page
 
                 if end_page is not None and page >= end_page:
                     break
@@ -804,6 +833,7 @@ def main() -> None:
 
             if end_page is None:
                 raise RuntimeError("Capture ended without determining the final page")
+            audit_counter(args, end_page, known_total)
             for page in range(1, end_page + 1):
                 page_hash = (
                     completed_hashes[page]

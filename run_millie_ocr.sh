@@ -7,6 +7,34 @@ BOOK_TITLE="${1:-}"
 RUN_MODE="${2:-run}"
 REQUESTED_RESULT_ROOT="${3:-}"
 OUTPUT_MODE="${4:-all}"
+PACKAGE_DIR="${0:A:h}"
+CACHE_BASE="${XDG_CACHE_HOME:-$HOME/.cache}"
+RUNTIME_PYTHON="${MILLIE_OCR_PYTHON:-}"
+if [[ -z "$RUNTIME_PYTHON" ]]; then
+  for candidate in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
+    if [[ -x "$candidate" ]] && "$candidate" -c 'import json, pathlib' >/dev/null 2>&1; then
+      RUNTIME_PYTHON="$candidate"
+      break
+    fi
+  done
+fi
+
+AUTO_RESUME=0
+if [[ "$RUN_MODE" == "resume" ]]; then
+  RESUME_INFO_FILE="$CACHE_BASE/millie-ocr/resume.json"
+  if [[ -z "$RUNTIME_PYTHON" || ! -x "$RUNTIME_PYTHON" ]]; then
+    exit 10
+  fi
+  if ! RESUME_INFO_OUTPUT="$("$RUNTIME_PYTHON" "$PACKAGE_DIR/resume_state.py" info --file "$RESUME_INFO_FILE" 2>/dev/null)"; then
+    exit 13
+  fi
+  RESUME_INFO_LINES=("${(@f)RESUME_INFO_OUTPUT}")
+  BOOK_TITLE="${RESUME_INFO_LINES[1]:-}"
+  OUTPUT_MODE="${RESUME_INFO_LINES[2]:-}"
+  REQUESTED_RESULT_ROOT="${RESUME_INFO_LINES[3]:-}"
+  AUTO_RESUME=1
+fi
+
 case "$OUTPUT_MODE" in
   scan-only) OUTPUT_LABEL="스캔 이미지" ;;
   pdf-only) OUTPUT_LABEL="OCR 없는 PDF" ;;
@@ -23,8 +51,6 @@ if [[ -z "$BOOK_TITLE" || "$BOOK_TITLE" == "--auto" ]]; then
   AUTO_TITLE=1
   BOOK_TITLE="밀리의서재"
 fi
-PACKAGE_DIR="${0:A:h}"
-CACHE_BASE="${XDG_CACHE_HOME:-$HOME/.cache}"
 DEFAULT_ENGINE_ROOT="$CACHE_BASE/millie-ocr/surya2"
 LEGACY_ENGINE_ROOT="$CACHE_BASE/codex-korean-ocr/surya2"
 if [[ -n "${MILLIE_OCR_ENGINE_ROOT:-}" ]]; then
@@ -36,17 +62,8 @@ else
 fi
 ENGINE_PYTHON="$ENGINE_ROOT/surya-venv/bin/python"
 SURYA_BIN="$ENGINE_ROOT/surya-venv/bin/surya_ocr"
-RUNTIME_PYTHON="${MILLIE_OCR_PYTHON:-}"
-if [[ -z "$RUNTIME_PYTHON" ]]; then
-  for candidate in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
-    if [[ -x "$candidate" ]] && "$candidate" -c 'import json, pathlib' >/dev/null 2>&1; then
-      RUNTIME_PYTHON="$candidate"
-      break
-    fi
-  done
-fi
 if [[ -z "$REQUESTED_RESULT_ROOT" && -z "${MILLIE_OCR_RESULT_ROOT:-}" && "$RUN_MODE" == "run" ]]; then
-  if ! REQUESTED_RESULT_ROOT="$(/usr/bin/osascript -e 'POSIX path of (choose folder with prompt "밀리 OCR 결과를 저장할 폴더를 선택하세요.")' 2>/dev/null)"; then
+  if ! REQUESTED_RESULT_ROOT="$(/usr/bin/osascript -e 'POSIX path of (choose folder with prompt "마이북 결과를 저장할 폴더를 선택하세요.")' 2>/dev/null)"; then
     exit 0
   fi
 fi
@@ -74,7 +91,7 @@ if [[ "$RUN_MODE" == "--smoke" ]]; then
 fi
 
 notify() {
-  /usr/bin/osascript -e "display notification \"$1\" with title \"밀리 OCR\"" >/dev/null 2>&1 || true
+  /usr/bin/osascript -e "display notification \"$1\" with title \"마이북\"" >/dev/null 2>&1 || true
 }
 
 status_update() {
@@ -178,7 +195,7 @@ fail() {
     --state error \
     --message "작업이 중단되었습니다. 실행 기록에서 원인을 확인해 주세요." \
     --error "종료 코드 ${exit_code} · ${SHORTCUT_LOG}"
-  notify "작업이 중단됐습니다. 밀리 OCR 로그를 확인해 주세요."
+  notify "작업이 중단됐습니다. 마이북 로그를 확인해 주세요."
   exit "$exit_code"
 }
 
@@ -192,10 +209,10 @@ if [[ ! -f "$NATIVE_SCRIPT" ]]; then
     --reset \
     --state error \
     --phase preparing \
-    --message "밀리 OCR 창 제어 파일을 찾지 못했습니다." \
+    --message "마이북 창 제어 파일을 찾지 못했습니다." \
     --log-path "$SHORTCUT_LOG" \
     --error "설치 명령을 다시 실행해 주세요."
-  notify "밀리 OCR을 다시 설치해 주세요."
+  notify "마이북을 다시 설치해 주세요."
   exit 11
 fi
 
@@ -243,9 +260,9 @@ if ! NATIVE_STATE="$(/usr/bin/osascript "$NATIVE_SCRIPT" state kr.co.millie.Mill
     status_update \
       --state error \
       --phase preparing \
-      --message "밀리 OCR에 손쉬운 사용 권한이 필요합니다." \
-      --error "밀리의서재가 아니라 '밀리 OCR'을 시스템 설정 > 개인정보 보호 및 보안 > 손쉬운 사용에서 허용해 주세요. ${NATIVE_STATE}"
-    notify "밀리의서재가 아니라 '밀리 OCR'에 손쉬운 사용 권한을 허용해 주세요."
+      --message "마이북에 손쉬운 사용 권한이 필요합니다." \
+      --error "밀리의서재가 아니라 '마이북'을 시스템 설정 > 개인정보 보호 및 보안 > 손쉬운 사용에서 허용해 주세요. ${NATIVE_STATE}"
+    notify "밀리의서재가 아니라 '마이북'에 손쉬운 사용 권한을 허용해 주세요."
     exit 3
   fi
   status_update \
@@ -293,11 +310,13 @@ if [[ "${RESUME_PROBE_LINES[1]:-0}" == "1" ]]; then
   if [[ "$RESUME_TOTAL_LABEL" == "0" ]]; then
     RESUME_TOTAL_LABEL="?"
   fi
-  if ! RESUME_CHOICE="$(/usr/bin/osascript \
+  if [[ "$AUTO_RESUME" == "1" ]]; then
+    RESUME_CHOICE="이어서 작업"
+  elif ! RESUME_CHOICE="$(/usr/bin/osascript \
       -e 'on run argv' \
       -e 'set pageLabel to item 1 of argv & "/" & item 2 of argv & "쪽"' \
       -e 'set folderLabel to item 3 of argv' \
-      -e 'set answer to display dialog "중단된 스캔 " & pageLabel & "을 발견했습니다." & return & return & "기존 폴더에서 다음 페이지부터 이어서 진행할까요?" & return & folderLabel with title "밀리 OCR · 이어서 작업" buttons {"새로 시작", "이어서 작업"} default button "이어서 작업" with icon note' \
+      -e 'set answer to display dialog "중단된 스캔 " & pageLabel & "을 발견했습니다." & return & return & "기존 폴더에서 다음 페이지부터 이어서 진행할까요?" & return & folderLabel with title "마이북 · 이어서 작업" buttons {"새로 시작", "이어서 작업"} default button "이어서 작업" with icon note' \
       -e 'return button returned of answer' \
       -e 'end run' \
       "$RESUME_LAST_PAGE" "$RESUME_TOTAL_LABEL" "$RESUME_RUN_DIR" 2>/dev/null)"; then
@@ -314,6 +333,15 @@ if [[ "${RESUME_PROBE_LINES[1]:-0}" == "1" ]]; then
     IMAGE_DIR="$RESUME_IMAGE_DIR"
     RESULT_ROOT="${RUN_DIR:h}"
   fi
+fi
+
+if [[ "$AUTO_RESUME" == "1" && "$RESUME_SELECTED" != "1" ]]; then
+  status_update \
+    --state stopped \
+    --phase preparing \
+    --message "이어갈 수 있는 저장 페이지를 찾지 못했습니다." \
+    --error "마이북을 직접 실행해 새 작업을 시작해 주세요."
+  exit 13
 fi
 
 if [[ "$RESUME_SELECTED" == "0" ]]; then
