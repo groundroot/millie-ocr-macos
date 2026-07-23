@@ -22,6 +22,17 @@ from status_store import update_status
 
 DEFAULT_APP = "kr.co.millie.MillieShelf"
 PAGE_COUNTER = re.compile(r"(?<!\d)(\d+)\s*/\s*(\d+)(?!\d)")
+OF_PAGE_COUNTER = re.compile(
+    r"(?<!\d)(\d+)\s+of\s+(\d+)(?!\d)", re.IGNORECASE
+)
+LABELED_PAGE_COUNTER = re.compile(
+    r"(?:현재|current)\s*(?:쪽|페이지|page)?\s*[=:]?\s*(\d+)[^\n\d]+"
+    r"(?:전체|total)\s*(?:쪽|페이지|pages?)?\s*[=:]?\s*(\d+)",
+    re.IGNORECASE,
+)
+KOREAN_TOTAL_CURRENT_COUNTER = re.compile(
+    r"(?<!\d)(\d+)\s*(?:쪽|페이지)?\s*중\s*(\d+)\s*(?:쪽|페이지)?(?!\d)"
+)
 FINAL_PAGE_COUNTER = re.compile(
     r"(?<!\d)(\d+)\s*/\s*\(\s*100\s*%\s*\)"
 )
@@ -114,28 +125,35 @@ def run_native(
 def state_from_result(result: dict) -> State:
     snapshot = result.get("snapshot", {})
     tree = snapshot.get("treeText", "")
-    match = PAGE_COUNTER.search(tree)
+    match = PAGE_COUNTER.search(tree) or OF_PAGE_COUNTER.search(tree)
     if match:
         current, total = map(int, match.groups())
     else:
-        final_match = FINAL_PAGE_COUNTER.search(tree)
-        if final_match:
-            current = int(final_match.group(1))
-            total = current
+        labeled_match = LABELED_PAGE_COUNTER.search(tree)
+        korean_total_match = KOREAN_TOTAL_CURRENT_COUNTER.search(tree)
+        if labeled_match:
+            current, total = map(int, labeled_match.groups())
+        elif korean_total_match:
+            total, current = map(int, korean_total_match.groups())
         else:
-            slider_range_match = SLIDER_RANGE_COUNTER.search(tree)
-            slider_match = SLIDER_PAGE_COUNTER.search(tree)
-            if slider_range_match:
-                current = max(1, int(round(float(slider_range_match.group(1)))))
-                maximum = int(round(float(slider_range_match.group(2))))
-                total = maximum if maximum >= current and maximum > 1 else 0
-            elif slider_match:
-                current = max(1, int(round(float(slider_match.group(1)))))
-                total = 0
+            final_match = FINAL_PAGE_COUNTER.search(tree)
+            if final_match:
+                current = int(final_match.group(1))
+                total = current
             else:
-                raise RuntimeError(
-                    "Reader page counter was not found; close any menu and keep one page visible"
-                )
+                slider_range_match = SLIDER_RANGE_COUNTER.search(tree)
+                slider_match = SLIDER_PAGE_COUNTER.search(tree)
+                if slider_range_match:
+                    current = max(1, int(round(float(slider_range_match.group(1)))))
+                    maximum = int(round(float(slider_range_match.group(2))))
+                    total = maximum if maximum >= current and maximum > 1 else 0
+                elif slider_match:
+                    current = max(1, int(round(float(slider_match.group(1)))))
+                    total = 0
+                else:
+                    raise RuntimeError(
+                        "Reader page counter was not found; close any menu and keep one page visible"
+                    )
     if current < 1 or (total > 0 and total < current):
         raise RuntimeError(
             f"Invalid reader page counter: {current}/{total}"
@@ -215,6 +233,27 @@ def get_state_result(args: argparse.Namespace, restore: bool = False) -> dict:
     raise RuntimeError(f"Reader window remained unavailable: {last_error}")
 
 
+def save_reader_state_diagnostic(args: argparse.Namespace, result: dict) -> Path | None:
+    try:
+        base = (
+            args.status_file.expanduser().parent
+            if args.status_file
+            else Path.home() / ".cache" / "millie-ocr"
+        )
+        base.mkdir(parents=True, exist_ok=True)
+        path = base / "reader-state.txt"
+        snapshot = result.get("snapshot", {})
+        title = snapshot.get("window", {}).get("title", "")
+        tree = snapshot.get("treeText", "")
+        path.write_text(
+            f"window_title={title}\napp_pid={args.app_pid or 0}\n\n{tree}\n",
+            encoding="utf-8",
+        )
+        return path
+    except OSError:
+        return None
+
+
 def get_state(args: argparse.Namespace, restore: bool = False) -> State:
     deadline = time.monotonic() + max(0.0, args.reader_ready_seconds)
     last_error: RuntimeError | None = None
@@ -230,10 +269,18 @@ def get_state(args: argparse.Namespace, restore: bool = False) -> State:
                     "Millie's Library is showing its home screen; open the book in one-page reader mode"
                 ) from error
             if time.monotonic() >= deadline:
+                try:
+                    diagnostic_result = run_native(args, "tree")
+                except RuntimeError:
+                    diagnostic_result = result
+                diagnostic_path = save_reader_state_diagnostic(args, diagnostic_result)
+                diagnostic_note = (
+                    f"; diagnostic={diagnostic_path}" if diagnostic_path else ""
+                )
                 raise RuntimeError(
                     "Reader page counter did not become available within "
                     f"{args.reader_ready_seconds:.1f}s; close menus and keep the book open "
-                    f"in one-page mode (last error: {last_error})"
+                    f"in one-page mode (last error: {last_error}){diagnostic_note}"
                 ) from error
             time.sleep(max(args.retry_seconds, 0.15))
 
