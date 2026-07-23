@@ -7,6 +7,7 @@ property runnerPath : (POSIX path of (path to home folder)) & "Library/Applicati
 property logPath : (POSIX path of (path to home folder)) & "Library/Logs/MillieOCRShortcut.log"
 property permissionMarkerPath : (POSIX path of (path to home folder)) & ".cache/millie-ocr/permission-setup.request"
 property permissionResultPath : (POSIX path of (path to home folder)) & ".cache/millie-ocr/permission-setup.result"
+property resumeMarkerPath : (POSIX path of (path to home folder)) & ".cache/millie-ocr/resume.request"
 
 on permissionMode()
 	try
@@ -50,7 +51,7 @@ on requestAccessibilityPermission()
 	end if
 	my openPrivacyPane("accessibility")
 	try
-		display dialog "손쉬운 사용에서 반드시 ‘밀리 OCR’을 켜세요. ‘밀리의서재’가 아닙니다. 켠 다음 권한 확인을 누르세요." with title "1/2 · 손쉬운 사용 권한" buttons {"설치 중단", "권한 확인"} default button "권한 확인" cancel button "설치 중단" with icon caution
+		display dialog "손쉬운 사용에서 반드시 ‘마이북’을 켜세요. ‘밀리의서재’가 아닙니다. 켠 다음 권한 확인을 누르세요." with title "1/2 · 손쉬운 사용 권한" buttons {"설치 중단", "권한 확인"} default button "권한 확인" cancel button "설치 중단" with icon caution
 	on error number -128
 		my writePermissionResult("cancelled")
 		return
@@ -75,7 +76,7 @@ on requestScreenCapturePermission()
 	end if
 	my openPrivacyPane("screen")
 	try
-		display dialog "화면 및 시스템 오디오 녹음에서 반드시 ‘밀리 OCR’을 켜세요. 오디오는 사용하지 않지만 책 화면 캡처에 화면 권한이 필요합니다. 켠 다음 권한 확인을 누르세요." with title "2/2 · 화면 녹화 권한" buttons {"설치 중단", "권한 확인"} default button "권한 확인" cancel button "설치 중단" with icon caution
+		display dialog "화면 및 시스템 오디오 녹음에서 반드시 ‘마이북’을 켜세요. 오디오는 사용하지 않지만 책 화면 캡처에 화면 권한이 필요합니다. 켠 다음 권한 확인을 누르세요." with title "2/2 · 화면 녹화 권한" buttons {"설치 중단", "권한 확인"} default button "권한 확인" cancel button "설치 중단" with icon caution
 	on error number -128
 		my writePermissionResult("cancelled")
 		return
@@ -97,9 +98,18 @@ on runPermissionSetup(permissionKind)
 	end if
 end runPermissionSetup
 
+on consumeResumeRequest()
+	try
+		do shell script "/usr/bin/test -f " & quoted form of resumeMarkerPath & " && /bin/rm -f " & quoted form of resumeMarkerPath
+		return true
+	on error
+		return false
+	end try
+end consumeResumeRequest
+
 on chooseOutputMode()
 	set outputChoices to {"스캔만 — PNG 이미지", "PDF만 — OCR 없는 이미지 PDF", "OCR PDF만 — 검색 가능한 PDF", "Markdown만 — OCR 본문", "모두 만들기 — OCR PDF + Markdown + EPUB"}
-	set selectedMode to choose from list outputChoices with title "밀리 OCR · 결과 선택" with prompt "캡처가 끝난 뒤 만들 결과를 선택하세요." default items {item 5 of outputChoices} OK button name "계속" cancel button name "취소"
+	set selectedMode to choose from list outputChoices with title "마이북 · 결과 선택" with prompt "캡처가 끝난 뒤 만들 결과를 선택하세요." default items {item 5 of outputChoices} OK button name "계속" cancel button name "취소"
 	if selectedMode is false then return missing value
 	set selectedText to item 1 of selectedMode
 	if selectedText starts with "스캔만" then return "scan-only"
@@ -121,10 +131,27 @@ on run
 	set requestedPermission to my permissionMode()
 	if requestedPermission is not "" then
 		my runPermissionSetup(requestedPermission)
-		return "밀리 OCR 권한 확인을 마쳤습니다."
+		return "마이북 권한 확인을 마쳤습니다."
+	end if
+	if my consumeResumeRequest() then
+		set launchCommand to "/bin/mkdir -p " & quoted form of ((POSIX path of (path to home folder)) & "Library/Logs") & " && " & ¬
+			"/bin/zsh " & quoted form of runnerPath & " --auto resume '' all >> " & quoted form of logPath & " 2>&1"
+		display notification "중단된 작업을 이어서 시작합니다." with title "마이북"
+		try
+			tell application id "kr.co.millie.MillieShelf" to activate
+		end try
+		try
+			with timeout of 604800 seconds
+				do shell script launchCommand
+			end timeout
+		on error errorMessage number errorNumber
+			display notification "작업을 재개하지 못했습니다. 대시보드에서 원인을 확인해 주세요." with title "마이북"
+			return "마이북 재개 오류 " & errorNumber & ": " & errorMessage
+		end try
+		return "마이북 작업을 재개했습니다."
 	end if
 	try
-		set selectedFolder to choose folder with prompt "밀리 OCR 결과를 저장할 폴더를 선택하세요."
+		set selectedFolder to choose folder with prompt "마이북 결과를 저장할 폴더를 선택하세요."
 	on error number -128
 		return "사용자가 저장 위치 선택을 취소했습니다."
 	end try
@@ -138,7 +165,7 @@ on run
 	set launchCommand to "/bin/mkdir -p " & quoted form of ((POSIX path of (path to home folder)) & "Library/Logs") & " && " & ¬
 		"/bin/zsh " & quoted form of runnerPath & " --auto run " & quoted form of resultRoot & " " & quoted form of outputMode & " >> " & ¬
 		quoted form of logPath & " 2>&1"
-	display notification ((my outputModeLabel(outputMode)) & " 작업을 시작했습니다.") with title "밀리 OCR"
+	display notification ((my outputModeLabel(outputMode)) & " 작업을 시작했습니다.") with title "마이북"
 	-- Give the native chooser one event-loop turn to close, then return focus to the reader.
 	delay 0.1
 	try
@@ -149,8 +176,8 @@ on run
 			do shell script launchCommand
 		end timeout
 	on error errorMessage number errorNumber
-		display notification "작업이 중단됐습니다. 대시보드에서 원인을 확인해 주세요." with title "밀리 OCR"
-		return "밀리 OCR 오류 " & errorNumber & ": " & errorMessage
+		display notification "작업이 중단됐습니다. 대시보드에서 원인을 확인해 주세요." with title "마이북"
+		return "마이북 오류 " & errorNumber & ": " & errorMessage
 	end try
-	return "밀리 OCR 작업을 완료했습니다."
+	return "마이북 작업을 완료했습니다."
 end run

@@ -9,7 +9,8 @@ DASHBOARD_LABEL="com.millieocr.dashboard"
 DASHBOARD_PLIST="$HOME/Library/LaunchAgents/${DASHBOARD_LABEL}.plist"
 RUNTIME_PYTHON="${MILLIE_OCR_DASHBOARD_PYTHON:-}"
 APP_DIR="$HOME/Applications"
-APP_PATH="$APP_DIR/밀리 OCR.app"
+APP_PATH="$APP_DIR/마이북.app"
+LEGACY_APP_PATH="$APP_DIR/밀리 OCR.app"
 
 if [[ -z "$RUNTIME_PYTHON" ]]; then
   for candidate in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
@@ -74,6 +75,11 @@ done
 /usr/bin/osacompile -o "$INSTALL_DIR/millie_native.scpt" "$INSTALL_DIR/millie_native.applescript"
 /usr/bin/osacompile -o "$INSTALL_DIR/Millie_OCR.scpt" "$INSTALL_DIR/Millie_OCR.applescript"
 APP_ACTION="preserved"
+APP_NAME_ACTION="preserved"
+if [[ ! -d "$APP_PATH" && -d "$LEGACY_APP_PATH" ]]; then
+  /bin/mv "$LEGACY_APP_PATH" "$APP_PATH"
+  APP_NAME_ACTION="renamed"
+fi
 if [[ ! -d "$APP_PATH" || "${MILLIE_OCR_FORCE_APP_REBUILD:-0}" == "1" ]]; then
   /usr/bin/osacompile -o "$APP_PATH" "$INSTALL_DIR/Millie_OCR_Launcher.applescript"
   /usr/bin/ditto "$INSTALL_DIR/assets/MillieOCR.icns" "$APP_PATH/Contents/Resources/MillieOCR.icns"
@@ -87,9 +93,13 @@ if [[ ! -d "$APP_PATH" || "${MILLIE_OCR_FORCE_APP_REBUILD:-0}" == "1" ]]; then
   APP_ACTION="rebuilt"
 else
   if ! /usr/bin/codesign --verify --deep "$APP_PATH" >/dev/null 2>&1; then
-    printf '%s\n' '기존 밀리 OCR.app의 서명이 손상되었습니다. MILLIE_OCR_FORCE_APP_REBUILD=1로 다시 설치하세요.' >&2
+    printf '%s\n' '기존 마이북.app의 서명이 손상되었습니다. MILLIE_OCR_FORCE_APP_REBUILD=1로 다시 설치하세요.' >&2
     exit 11
   fi
+fi
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+if [[ -x "$LSREGISTER" ]]; then
+  "$LSREGISTER" -f "$APP_PATH" >/dev/null 2>&1 || true
 fi
 
 PERMISSION_MARKER="$HOME/.cache/millie-ocr/permission-setup.request"
@@ -102,9 +112,9 @@ run_permission_stage() {
   for attempt in {1..6}; do
     /usr/bin/printf '%s' "$permission_kind" > "$PERMISSION_MARKER"
     /bin/rm -f "$PERMISSION_RESULT"
-    printf '\n[%s] 설정 화면에서 “밀리 OCR”을 켠 뒤 앱의 권한 확인 버튼을 누르세요.\n' "$permission_label"
+    printf '\n[%s] 설정 화면에서 “마이북”을 켠 뒤 앱의 권한 확인 버튼을 누르세요.\n' "$permission_label"
     if ! /usr/bin/open -n -W "$APP_PATH"; then
-      printf '밀리 OCR 권한 설정 앱을 실행하지 못했습니다.\n' >&2
+      printf '마이북 권한 설정 앱을 실행하지 못했습니다.\n' >&2
       /bin/rm -f "$PERMISSION_MARKER" "$PERMISSION_RESULT"
       return 1
     fi
@@ -163,4 +173,5 @@ fi
 printf 'installed=%s\n' "$INSTALL_DIR"
 printf 'app=%s\n' "$APP_PATH"
 printf 'app_action=%s\n' "$APP_ACTION"
+printf 'app_name_action=%s\n' "$APP_NAME_ACTION"
 printf 'permission_action=%s\n' "$PERMISSION_ACTION"

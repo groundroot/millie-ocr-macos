@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Persistent resumable-capture metadata for Millie OCR."""
+"""Persistent resumable-capture metadata for MyBook."""
 
 from __future__ import annotations
 
@@ -150,7 +150,7 @@ def probe_resume(path: Path, book_title: str) -> tuple[dict[str, Any], int]:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Manage resumable Millie OCR capture state")
+    parser = argparse.ArgumentParser(description="Manage resumable MyBook capture state")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     initialize = subparsers.add_parser("init")
@@ -165,6 +165,9 @@ def parse_args() -> argparse.Namespace:
     probe = subparsers.add_parser("probe")
     probe.add_argument("--file", type=Path, required=True)
     probe.add_argument("--book-title", required=True)
+
+    info = subparsers.add_parser("info")
+    info.add_argument("--file", type=Path, required=True)
 
     clear = subparsers.add_parser("clear")
     clear.add_argument("--file", type=Path, required=True)
@@ -187,6 +190,15 @@ def main() -> None:
         return
     if args.command == "clear":
         clear_resume(path)
+        return
+    if args.command == "info":
+        payload = load_resume(path)
+        required = ("book_title", "output_mode", "result_root")
+        if not payload or any(not payload.get(key) for key in required):
+            raise SystemExit("이어갈 작업 정보가 없습니다.")
+        print(payload["book_title"])
+        print(payload["output_mode"])
+        print(payload["result_root"])
         return
 
     try:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Small localhost-only server for the Millie OCR status dashboard."""
+"""Small localhost-only server for the MyBook status dashboard."""
 
 from __future__ import annotations
 
@@ -112,7 +112,7 @@ def terminate_and_record(status_file: Path, pid: int) -> None:
             status_file,
             state="error",
             message="작업을 완전히 중지하지 못했습니다.",
-            error="밀리 OCR 앱을 종료한 뒤 다시 시도해 주세요.",
+            error="마이북 앱을 종료한 뒤 다시 시도해 주세요.",
         )
 
 
@@ -217,7 +217,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
-        if parsed.path not in {"/api/stop", "/api/reset"}:
+        if parsed.path not in {"/api/stop", "/api/resume", "/api/reset"}:
             self.send_json({"ok": False, "error": "Not found"}, HTTPStatus.NOT_FOUND)
             return
 
@@ -228,7 +228,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
             )
             return
 
-        action = "stop" if parsed.path == "/api/stop" else "reset"
+        action = {
+            "/api/stop": "stop",
+            "/api/resume": "resume",
+            "/api/reset": "reset",
+        }[parsed.path]
 
         expected_origins = {
             f"http://127.0.0.1:{self.server.server_port}",
@@ -239,18 +243,80 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_json({"ok": False, "error": "허용되지 않은 요청입니다."}, HTTPStatus.FORBIDDEN)
             return
         if (
-            self.headers.get("X-Millie-OCR") != action
+            self.headers.get("X-MyBook") != action
             or not self.headers.get("Content-Type", "").startswith("application/json")
         ):
-            message = (
-                "중지 요청을 확인할 수 없습니다."
-                if action == "stop"
-                else "리셋 요청을 확인할 수 없습니다."
-            )
+            message = {
+                "stop": "중지 요청을 확인할 수 없습니다.",
+                "resume": "재개 요청을 확인할 수 없습니다.",
+                "reset": "리셋 요청을 확인할 수 없습니다.",
+            }[action]
             self.send_json({"ok": False, "error": message}, HTTPStatus.BAD_REQUEST)
             return
 
         status_payload = load_status(self.server.status_file)
+        if action == "resume":
+            if status_payload.get("state") != "stopped":
+                self.send_json(
+                    {"ok": False, "error": "중지된 작업이 있을 때만 재개할 수 있습니다."},
+                    HTTPStatus.CONFLICT,
+                )
+                return
+            try:
+                worker_pid = int(status_payload.get("worker_pid") or 0)
+            except (TypeError, ValueError):
+                worker_pid = 0
+            if find_runner_pid(worker_pid):
+                self.send_json(
+                    {"ok": False, "error": "기존 작업 프로세스가 아직 실행 중입니다."},
+                    HTTPStatus.CONFLICT,
+                )
+                return
+            resume_file = self.server.status_file.with_name("resume.json")
+            try:
+                resume_payload = json.loads(resume_file.read_text(encoding="utf-8"))
+            except (FileNotFoundError, json.JSONDecodeError, OSError):
+                resume_payload = {}
+            required_resume_fields = ("book_title", "output_mode", "result_root", "run_dir", "image_dir")
+            if any(not resume_payload.get(key) for key in required_resume_fields):
+                self.send_json(
+                    {"ok": False, "error": "이어갈 작업 정보를 찾지 못했습니다."},
+                    HTTPStatus.CONFLICT,
+                )
+                return
+            app_candidates = [
+                Path.home() / "Applications" / "마이북.app",
+                Path.home() / "Applications" / "밀리 OCR.app",
+            ]
+            app_path = next((path for path in app_candidates if path.is_dir()), None)
+            if app_path is None:
+                self.send_json(
+                    {"ok": False, "error": "마이북 앱을 찾지 못했습니다. 설치 명령을 다시 실행해 주세요."},
+                    HTTPStatus.NOT_FOUND,
+                )
+                return
+            resume_request = self.server.status_file.with_name("resume.request")
+            try:
+                resume_request.write_text("resume\n", encoding="utf-8")
+                opened = subprocess.run(
+                    ["/usr/bin/open", str(app_path)],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                if opened.returncode != 0:
+                    raise OSError((opened.stderr or opened.stdout).strip() or "마이북 앱을 열지 못했습니다.")
+            except (OSError, subprocess.TimeoutExpired) as error:
+                resume_request.unlink(missing_ok=True)
+                self.send_json(
+                    {"ok": False, "error": str(error)},
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+                return
+            self.send_json({"ok": True, "message": "작업 재개를 요청했습니다."})
+            return
+
         if action == "reset":
             if status_payload.get("state") != "stopped":
                 self.send_json(
@@ -323,7 +389,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Serve the Millie OCR dashboard")
+    parser = argparse.ArgumentParser(description="Serve the MyBook dashboard")
     parser.add_argument("--status-file", type=Path, required=True)
     parser.add_argument("--html", type=Path, required=True)
     parser.add_argument("--port", type=int, default=8765)

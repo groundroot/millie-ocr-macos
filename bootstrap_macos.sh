@@ -8,7 +8,7 @@ stage() {
 }
 
 if [[ "$(/usr/bin/uname -s)" != "Darwin" ]]; then
-  printf '%s\n' 'Millie OCR는 macOS에서만 설치할 수 있습니다.' >&2
+  printf '%s\n' '마이북은 macOS에서만 설치할 수 있습니다.' >&2
   exit 1
 fi
 
@@ -28,7 +28,7 @@ fi
 stage "2/5" "Python·PDF 도구·llama.cpp·Git을 준비합니다."
 brew install python poppler llama.cpp git
 
-stage "3/5" "최신 Millie OCR 파일을 준비합니다."
+stage "3/5" "최신 마이북 파일을 준비합니다."
 SCRIPT_DIR="${0:A:h}"
 if [[ -f "$SCRIPT_DIR/install_local.sh" && -f "$SCRIPT_DIR/run_millie_ocr.sh" ]]; then
   REPOSITORY_DIR="$SCRIPT_DIR"
@@ -81,9 +81,9 @@ if ! /usr/bin/curl -fsS --max-time 1 http://127.0.0.1:8765/health >/dev/null 2>&
 fi
 
 printf '\n%s\n' '설치가 완료되었습니다.'
-printf '%s\n' '1. 응용 프로그램의 “밀리 OCR”을 직접 실행하거나 기존 단축어를 사용하세요.'
+printf '%s\n' '1. 응용 프로그램의 “마이북”을 직접 실행하거나 기존 단축어를 사용하세요.'
 printf '%s\n' '2. 실행할 때마다 결과 저장 폴더와 결과 종류를 선택할 수 있습니다.'
-printf '%s\n' '3. 처음 설치라면 손쉬운 사용과 화면 녹화에서 “밀리 OCR” 승인이 확인되었습니다.'
+printf '%s\n' '3. 처음 설치라면 손쉬운 사용과 화면 녹화에서 “마이북” 승인이 확인되었습니다.'
 printf '%s\n' '4. 같은 명령을 다시 실행하면 보안 권한을 유지한 채 최신 버전으로 업데이트됩니다.'
-/usr/bin/open -R "$HOME/Applications/밀리 OCR.app" >/dev/null 2>&1 || true
+/usr/bin/open -R "$HOME/Applications/마이북.app" >/dev/null 2>&1 || true
 /usr/bin/open http://127.0.0.1:8765 >/dev/null 2>&1 || true

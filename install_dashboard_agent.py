@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create the per-user launch agent for the local Millie OCR dashboard."""
+"""Create the per-user launch agent for the local MyBook dashboard."""
 
 from __future__ import annotations
 
