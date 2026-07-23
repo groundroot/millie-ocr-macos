@@ -243,9 +243,12 @@ printf '[%s] launch mode=%s output_mode=%s requested_book=%s result_root=%s\n' "
 /usr/bin/caffeinate -dimsu -w $$ &
 CAFFEINATE_PID=$!
 
-if [[ ! -x "$ENGINE_PYTHON" || ! -x "$SURYA_BIN" ]]; then
-  status_update --phase preparing --message "처음 한 번만 OCR 엔진을 설치하고 있습니다." --phase-progress 0.2
-  notify "처음 한 번만 OCR 엔진을 설치합니다."
+if ! /bin/bash "$PACKAGE_DIR/install_surya_macos.sh" \
+    --root "$ENGINE_ROOT" \
+    --python "$RUNTIME_PYTHON" \
+    --check >/dev/null 2>&1; then
+  status_update --phase preparing --message "현재 Mac에 맞게 이미지·OCR 엔진을 복구하고 있습니다." --phase-progress 0.2
+  notify "이미지·OCR 엔진을 현재 Mac에 맞게 복구합니다."
   "$PACKAGE_DIR/install_surya_macos.sh" --root "$ENGINE_ROOT" --python "$RUNTIME_PYTHON"
 fi
 
