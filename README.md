@@ -1,4 +1,6 @@
-# 마이북 for macOS
+# 마이북 OCR for macOS
+
+GitHub 저장소: [groundroot/MyBookOCR](https://github.com/groundroot/MyBookOCR)
 
 밀리의서재에서 사용자가 열어 둔 책을 한 장씩 캡처하고, 실행할 때 선택한 결과만 만드는 자동화입니다.
 
@@ -13,6 +15,7 @@
 
 ## 2026-07-23 업데이트
 
+- GitHub 저장소 이름과 설치·업데이트·완전삭제 명령을 `groundroot/MyBookOCR`로 통일했습니다.
 - 터미널에 명령 한 줄만 붙여넣으면 필수 도구, 앱, OCR 엔진, 상태 대시보드까지 순서대로 설치합니다.
 - 앱과 대시보드에 표시되는 제품 이름을 `마이북`으로 통일했습니다.
 - 같은 명령을 다시 실행하면 `마이북.app`과 기존 보안 권한은 보존하고 실행 파일만 최신 버전으로 업데이트합니다.
@@ -28,7 +31,7 @@
 터미널을 열고 다음 명령을 한 번 실행합니다.
 
 ```bash
-/bin/zsh -c "$(curl -fsSL https://raw.githubusercontent.com/groundroot/millie-ocr-macos/main/bootstrap_macos.sh)"
+/bin/zsh -c "$(curl -fsSL https://raw.githubusercontent.com/groundroot/MyBookOCR/main/bootstrap_macos.sh)"
 ```
 
 이 명령 하나가 다음 작업을 순서대로 진행합니다.
@@ -234,8 +237,8 @@ brew install python poppler llama.cpp
 ## 수동 설치
 
 ```bash
-git clone https://github.com/groundroot/millie-ocr-macos.git
-cd millie-ocr-macos
+git clone https://github.com/groundroot/MyBookOCR.git
+cd MyBookOCR
 ./bootstrap_macos.sh
 ```
 
@@ -246,7 +249,7 @@ cd millie-ocr-macos
 설치나 권한 설정이 꼬였을 때 다음 명령 한 줄을 실행하면 마이북 앱, 대시보드, 설정, 로그, 전용 OCR 모델 캐시와 macOS 권한 기록을 삭제합니다.
 
 ```bash
-/usr/bin/curl -fsSL https://raw.githubusercontent.com/groundroot/millie-ocr-macos/main/uninstall_macos.sh | /bin/zsh -s -- --yes
+/usr/bin/curl -fsSL https://raw.githubusercontent.com/groundroot/MyBookOCR/main/uninstall_macos.sh | /bin/zsh -s -- --yes
 ```
 
 완전삭제 명령은 복구할 수 없습니다. 사용자가 선택해 만든 PDF·EPUB·Markdown·이미지 결과 폴더와 여러 앱이 함께 사용할 수 있는 Homebrew 도구는 삭제하지 않습니다. 단축어 앱에서 직접 만든 `마이북` 단축어는 단축어 앱에서 별도로 삭제하세요.
