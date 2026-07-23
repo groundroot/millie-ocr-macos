@@ -223,6 +223,8 @@ brew install python poppler llama.cpp
 
 첫 OCR 실행은 Surya 모델을 내려받기 때문에 오래 걸릴 수 있습니다.
 
+로그에 Pillow의 `_imaging` 파일이 `incompatible architecture (have 'x86_64', need 'arm64')`라고 표시되면 한 줄 설치 명령을 다시 실행하세요. 설치기가 Mac의 실제 CPU 구조와 Python·Pillow 구조를 검사하고 잘못 만들어진 OCR 환경만 자동으로 다시 생성합니다.
+
 ## 수동 설치
 
 ```bash

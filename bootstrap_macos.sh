@@ -54,7 +54,11 @@ fi
 stage "5/5" "한글 OCR 엔진을 확인합니다."
 if [[ "${MILLIE_OCR_SKIP_ENGINE_SETUP:-0}" == "1" ]]; then
   printf '%s\n' '요청에 따라 OCR 엔진 설치를 건너뜁니다.'
-elif [[ ! -x "$ENGINE_ROOT/surya-venv/bin/python" || ! -x "$ENGINE_ROOT/surya-venv/bin/surya_ocr" ]]; then
+elif ! /bin/bash "$REPOSITORY_DIR/install_surya_macos.sh" \
+    --root "$ENGINE_ROOT" \
+    --python "$(command -v python3)" \
+    --check >/dev/null 2>&1; then
+  printf '%s\n' '현재 Mac과 맞지 않거나 손상된 OCR 환경을 다시 만듭니다.'
   /bin/bash "$REPOSITORY_DIR/install_surya_macos.sh" \
     --root "$ENGINE_ROOT" \
     --python "$(command -v python3)" \
@@ -64,8 +68,10 @@ else
 fi
 
 if [[ "${MILLIE_OCR_SKIP_ENGINE_SETUP:-0}" != "1" ]]; then
-  "$ENGINE_ROOT/surya-venv/bin/python" -c 'import PIL, reportlab, surya' >/dev/null
-  [[ -x "$ENGINE_ROOT/surya-venv/bin/surya_ocr" ]]
+  /bin/bash "$REPOSITORY_DIR/install_surya_macos.sh" \
+    --root "$ENGINE_ROOT" \
+    --python "$(command -v python3)" \
+    --check >/dev/null
 fi
 
 for attempt in {1..20}; do
