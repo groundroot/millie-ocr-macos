@@ -11,6 +11,8 @@ RUNTIME_PYTHON="${MILLIE_OCR_DASHBOARD_PYTHON:-}"
 APP_DIR="$HOME/Applications"
 APP_PATH="$APP_DIR/마이북.app"
 LEGACY_APP_PATH="$APP_DIR/밀리 OCR.app"
+LAUNCHER_V1_MARKER="$APP_PATH/Contents/Resources/millie-ocr-stable-launcher-v1"
+LAUNCHER_V2_MARKER="$APP_PATH/Contents/Resources/mybook-stable-launcher-v2"
 
 if [[ -z "$RUNTIME_PYTHON" ]]; then
   for candidate in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
@@ -80,17 +82,34 @@ if [[ ! -d "$APP_PATH" && -d "$LEGACY_APP_PATH" ]]; then
   /bin/mv "$LEGACY_APP_PATH" "$APP_PATH"
   APP_NAME_ACTION="renamed"
 fi
-if [[ ! -d "$APP_PATH" || "${MILLIE_OCR_FORCE_APP_REBUILD:-0}" == "1" ]]; then
+APP_REBUILD_REASON=""
+if [[ ! -d "$APP_PATH" ]]; then
+  APP_REBUILD_REASON="new"
+elif [[ "${MILLIE_OCR_FORCE_APP_REBUILD:-0}" == "1" ]]; then
+  APP_REBUILD_REASON="forced"
+elif [[ -f "$LAUNCHER_V1_MARKER" && ! -f "$LAUNCHER_V2_MARKER" ]]; then
+  # The first lightweight launcher used an ambiguous POSIX-file coercion that
+  # fails on some macOS versions. Repair only that known build; do not replace
+  # older working full apps or an already-fixed launcher, so TCC permissions
+  # remain stable for normal updates.
+  APP_REBUILD_REASON="repair-v1"
+fi
+if [[ -n "$APP_REBUILD_REASON" ]]; then
   /usr/bin/osacompile -o "$APP_PATH" "$INSTALL_DIR/Millie_OCR_Launcher.applescript"
   /usr/bin/ditto "$INSTALL_DIR/assets/MillieOCR.icns" "$APP_PATH/Contents/Resources/MillieOCR.icns"
   /usr/libexec/PlistBuddy -c 'Delete :CFBundleIdentifier' "$APP_PATH/Contents/Info.plist" >/dev/null 2>&1 || true
   /usr/libexec/PlistBuddy -c 'Add :CFBundleIdentifier string com.groundroot.millieocr' "$APP_PATH/Contents/Info.plist"
   /usr/libexec/PlistBuddy -c 'Set :CFBundleIconFile MillieOCR' "$APP_PATH/Contents/Info.plist"
   /usr/libexec/PlistBuddy -c 'Delete :CFBundleIconName' "$APP_PATH/Contents/Info.plist" >/dev/null 2>&1 || true
-  /usr/bin/touch "$APP_PATH/Contents/Resources/millie-ocr-stable-launcher-v1"
+  /bin/rm -f "$LAUNCHER_V1_MARKER"
+  /usr/bin/touch "$LAUNCHER_V2_MARKER"
   SIGNING_IDENTITY="${MILLIE_OCR_SIGNING_IDENTITY:--}"
   /usr/bin/codesign --force --deep --sign "$SIGNING_IDENTITY" "$APP_PATH" >/dev/null
-  APP_ACTION="rebuilt"
+  if [[ "$APP_REBUILD_REASON" == "repair-v1" ]]; then
+    APP_ACTION="repaired"
+  else
+    APP_ACTION="rebuilt"
+  fi
 else
   if ! /usr/bin/codesign --verify --deep "$APP_PATH" >/dev/null 2>&1; then
     printf '%s\n' '기존 마이북.app의 서명이 손상되었습니다. MILLIE_OCR_FORCE_APP_REBUILD=1로 다시 설치하세요.' >&2
@@ -145,7 +164,7 @@ run_permission_stage() {
 }
 
 PERMISSION_ACTION="preserved"
-if [[ "${MILLIE_OCR_SKIP_PERMISSION_SETUP:-0}" != "1" && ( "$APP_ACTION" == "rebuilt" || "${MILLIE_OCR_FORCE_PERMISSION_SETUP:-0}" == "1" ) ]]; then
+if [[ "${MILLIE_OCR_SKIP_PERMISSION_SETUP:-0}" != "1" && ( "$APP_ACTION" == "rebuilt" || "$APP_ACTION" == "repaired" || "${MILLIE_OCR_FORCE_PERMISSION_SETUP:-0}" == "1" ) ]]; then
   run_permission_stage accessibility "1/2 손쉬운 사용"
   run_permission_stage screen "2/2 화면 녹화"
   PERMISSION_ACTION="checked"
