@@ -233,17 +233,17 @@ cd millie-ocr-macos
 
 화면이 없는 원격 최초 설치나 개발 검증에서만 권한 설정 단계를 건너뛰려면 `MILLIE_OCR_SKIP_PERMISSION_SETUP=1`을 사용할 수 있습니다. 일반 업데이트는 기존 앱과 권한을 자동으로 보존하므로 이 변수가 필요하지 않습니다.
 
-## 제거
+## 완전삭제 후 다시 설치
+
+설치나 권한 설정이 꼬였을 때 다음 명령 한 줄을 실행하면 마이북 앱, 대시보드, 설정, 로그, 전용 OCR 모델 캐시와 macOS 권한 기록을 삭제합니다.
 
 ```bash
-launchctl bootout "gui/$(id -u)/com.millieocr.dashboard" 2>/dev/null || true
-rm -f ~/Library/LaunchAgents/com.millieocr.dashboard.plist
-rm -rf "$HOME/Library/Application Support/MillieOCR"
-rm -rf "$HOME/Applications/마이북.app"
-rm -rf "$HOME/Applications/밀리 OCR.app"
+/usr/bin/curl -fsSL https://raw.githubusercontent.com/groundroot/millie-ocr-macos/main/uninstall_macos.sh | /bin/zsh -s -- --yes
 ```
 
-OCR 모델 캐시와 사용자가 선택한 결과 폴더는 자동 삭제하지 않습니다.
+완전삭제 명령은 복구할 수 없습니다. 사용자가 선택해 만든 PDF·EPUB·Markdown·이미지 결과 폴더와 여러 앱이 함께 사용할 수 있는 Homebrew 도구는 삭제하지 않습니다. 단축어 앱에서 직접 만든 `마이북` 단축어는 단축어 앱에서 별도로 삭제하세요.
+
+삭제가 끝나면 [한 줄 설치](#한-줄-설치) 명령을 다시 실행하면 됩니다.
 
 ## 라이선스와 외부 구성요소
 
@@ -257,6 +257,6 @@ OCR 모델 캐시와 사용자가 선택한 결과 폴더는 자동 삭제하지
 
 ```bash
 python3 -m py_compile *.py
-zsh -n run_millie_ocr.sh install_local.sh bootstrap_macos.sh setup_remote_dashboard.sh
+zsh -n run_millie_ocr.sh install_local.sh bootstrap_macos.sh setup_remote_dashboard.sh uninstall_macos.sh
 osacompile -o /tmp/millie_native.scpt millie_native.applescript
 ```
