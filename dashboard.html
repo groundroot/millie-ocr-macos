@@ -1104,6 +1104,12 @@
       line-height: 1;
     }
 
+    .action.copy-action::after {
+      content: "⧉";
+      margin-top: -21px;
+      font-size: 15px;
+    }
+
     .action:hover:not(:disabled) {
       border-color: rgba(60,60,67,.08);
       background: rgba(255,255,255,.80);
@@ -1453,7 +1459,14 @@
             <button class="action" data-target="pdf" disabled><span>PDF</span><small>검색 가능한 문서</small></button>
             <button class="action" data-target="markdown" disabled><span>Markdown</span><small>추출된 본문</small></button>
             <button class="action" data-target="epub" disabled><span>EPUB</span><small>글자 크기 조절 전자책</small></button>
-            <button class="action" data-target="log"><span>실행 기록</span><small>문제 확인용</small></button>
+            <button id="copyLog" class="action copy-action" type="button" disabled>
+              <span id="copyLogLabel">로그 전체 복사</span>
+              <small id="copyLogHint">클립보드에 복사</small>
+            </button>
+            <button class="action" type="button" data-target="log-folder" disabled>
+              <span>로그 폴더 열기</span>
+              <small>Finder에서 보기</small>
+            </button>
           </div>
         </section>
 
@@ -1523,6 +1536,8 @@
     let stopRequestPending = false;
     let resumeRequestPending = false;
     let resetRequestPending = false;
+    let copyLogPending = false;
+    let copyLogFeedbackTimer = null;
     let controlSignature = "";
 
     const $ = id => document.getElementById(id);
@@ -1697,10 +1712,19 @@
           ? duration(ocrRemaining)
           : status.state === "complete" ? "완료" : "계산 중";
       $("updatedAt").textContent = updated ? `마지막 갱신 ${updated.toLocaleTimeString("ko-KR")}` : "마지막 갱신 —";
-      $("errorBox").textContent = status.error || "작업이 중단되었습니다. 실행 기록을 열어 원인을 확인해 주세요.";
+      $("errorBox").textContent = status.error || "작업이 중단되었습니다. 로그 전체 복사로 실행 기록을 확인해 주세요.";
 
-      const paths = {folder: status.run_dir, pdf: status.pdf_path, markdown: status.markdown_path, epub: status.epub_path, log: status.log_path};
-      document.querySelectorAll(".action").forEach(button => button.disabled = !paths[button.dataset.target]);
+      const paths = {
+        folder: status.run_dir,
+        pdf: status.pdf_path,
+        markdown: status.markdown_path,
+        epub: status.epub_path,
+        "log-folder": status.log_path
+      };
+      document.querySelectorAll(".action[data-target]").forEach(button => {
+        button.disabled = !paths[button.dataset.target];
+      });
+      $("copyLog").disabled = !status.log_path || copyLogPending;
       document.querySelector('[data-target="pdf"] small').textContent = status.output_mode === "pdf-only" ? "OCR 없는 이미지 문서" : "검색 가능한 문서";
       if (status.state === "running" && resumeRequestPending) resumeRequestPending = false;
       renderControls(status);
@@ -1734,7 +1758,7 @@
       }
     }
 
-    document.querySelectorAll(".action").forEach(button => button.addEventListener("click", async () => {
+    document.querySelectorAll(".action[data-target]").forEach(button => button.addEventListener("click", async () => {
       if (button.disabled) return;
       const label = button.querySelector("span").textContent;
       try {
@@ -1746,6 +1770,54 @@
         setTimeout(() => button.querySelector("span").textContent = label, 1800);
       }
     }));
+
+    async function writeClipboard(text) {
+      if (navigator.clipboard?.writeText) {
+        try {
+          await navigator.clipboard.writeText(text);
+          return;
+        } catch (error) {
+          // Use the selection fallback below when the browser denies Clipboard API access.
+        }
+      }
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.setAttribute("readonly", "");
+      textarea.style.position = "fixed";
+      textarea.style.left = "-9999px";
+      document.body.appendChild(textarea);
+      textarea.select();
+      const copied = document.execCommand("copy");
+      textarea.remove();
+      if (!copied) throw new Error("클립보드에 복사하지 못했습니다.");
+    }
+
+    $("copyLog").addEventListener("click", async () => {
+      if ($("copyLog").disabled) return;
+      copyLogPending = true;
+      $("copyLog").disabled = true;
+      $("copyLogLabel").textContent = "로그 읽는 중";
+      $("copyLogHint").textContent = "전체 기록을 준비합니다";
+      if (copyLogFeedbackTimer) clearTimeout(copyLogFeedbackTimer);
+      try {
+        const response = await fetch(apiPath("log"), {cache: "no-store"});
+        const payload = await response.json();
+        if (!response.ok || !payload.ok) throw new Error(payload.error || "실행 기록을 읽지 못했습니다.");
+        await writeClipboard(payload.text || "");
+        $("copyLogLabel").textContent = "복사 완료";
+        $("copyLogHint").textContent = `${Number(payload.characters || 0).toLocaleString("ko-KR")}자 복사됨`;
+      } catch (error) {
+        $("copyLogLabel").textContent = "복사 실패";
+        $("copyLogHint").textContent = error.message;
+      } finally {
+        copyLogPending = false;
+        $("copyLog").disabled = !latestStatus?.log_path;
+        copyLogFeedbackTimer = setTimeout(() => {
+          $("copyLogLabel").textContent = "로그 전체 복사";
+          $("copyLogHint").textContent = "클립보드에 복사";
+        }, 2200);
+      }
+    });
 
     $("stopJob").addEventListener("click", () => {
       if (!$("stopJob").disabled) $("stopDialog").showModal();

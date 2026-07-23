@@ -33,6 +33,11 @@ LABELED_PAGE_COUNTER = re.compile(
 KOREAN_TOTAL_CURRENT_COUNTER = re.compile(
     r"(?<!\d)(\d+)\s*(?:쪽|페이지)?\s*중\s*(\d+)\s*(?:쪽|페이지)?(?!\d)"
 )
+SPLIT_AX_PAGE_COUNTER = re.compile(
+    r"role=AXStaticText name=(\d+) description=[^\n]* value=\1[^\n]*\n"
+    r"role=AXStaticText name=\s*/\s* description=[^\n]* value=\s*/[^\n]*\n"
+    r"role=AXStaticText name=(\d+) description=[^\n]* value=\2(?:[^\n]*|$)"
+)
 FINAL_PAGE_COUNTER = re.compile(
     r"(?<!\d)(\d+)\s*/\s*\(\s*100\s*%\s*\)"
 )
@@ -136,26 +141,30 @@ def state_from_result(result: dict) -> State:
         elif korean_total_match:
             total, current = map(int, korean_total_match.groups())
         else:
-            final_match = FINAL_PAGE_COUNTER.search(tree)
-            if final_match:
-                current = int(final_match.group(1))
-                total = current
+            split_match = SPLIT_AX_PAGE_COUNTER.search(tree)
+            if split_match:
+                current, total = map(int, split_match.groups())
             else:
-                slider_range_match = SLIDER_RANGE_COUNTER.search(tree)
-                slider_match = SLIDER_PAGE_COUNTER.search(tree)
-                if slider_range_match:
-                    current = max(1, int(round(float(slider_range_match.group(1)))))
-                    maximum = int(round(float(slider_range_match.group(2))))
-                    total = maximum if maximum >= current and maximum > 1 else 0
-                elif slider_match:
-                    current = max(1, int(round(float(slider_match.group(1)))))
-                    total = 0
+                final_match = FINAL_PAGE_COUNTER.search(tree)
+                if final_match:
+                    current = int(final_match.group(1))
+                    total = current
                 else:
-                    raise RuntimeError(
-                        "페이지 번호를 찾지 못했습니다. 밀리의서재 뷰어 설정에서 "
-                        "'가로 보기'를 선택하고 한 쪽씩 보이게 한 뒤 다시 실행해 주세요. "
-                        "스크롤 모드는 지원하지 않습니다."
-                    )
+                    slider_range_match = SLIDER_RANGE_COUNTER.search(tree)
+                    slider_match = SLIDER_PAGE_COUNTER.search(tree)
+                    if slider_range_match:
+                        current = max(1, int(round(float(slider_range_match.group(1)))))
+                        maximum = int(round(float(slider_range_match.group(2))))
+                        total = maximum if maximum >= current and maximum > 1 else 0
+                    elif slider_match:
+                        current = max(1, int(round(float(slider_match.group(1)))))
+                        total = 0
+                    else:
+                        raise RuntimeError(
+                            "페이지 번호를 찾지 못했습니다. 밀리의서재 뷰어 설정에서 "
+                            "'가로 보기'를 선택하고 한 쪽씩 보이게 한 뒤 다시 실행해 주세요. "
+                            "스크롤 모드는 지원하지 않습니다."
+                        )
     if current < 1 or (total > 0 and total < current):
         raise RuntimeError(
             f"Invalid reader page counter: {current}/{total}"

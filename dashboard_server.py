@@ -181,6 +181,36 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_json({"ok": True, "status": load_status(self.server.status_file)})
             return
 
+        if parsed.path == "/api/log":
+            if self.is_remote_request():
+                self.send_json(
+                    {"ok": False, "error": "외부 조회 화면에서는 Mac의 실행 기록을 읽을 수 없습니다."},
+                    HTTPStatus.FORBIDDEN,
+                )
+                return
+            status_payload = load_status(self.server.status_file)
+            raw_path = status_payload.get("log_path", "")
+            if not raw_path:
+                self.send_json({"ok": False, "error": "아직 복사할 실행 기록이 없습니다."}, 404)
+                return
+            path = Path(raw_path).expanduser()
+            if not path.is_file():
+                self.send_json({"ok": False, "error": "실행 기록 파일을 찾을 수 없습니다."}, 404)
+                return
+            try:
+                log_text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError as error:
+                self.send_json({"ok": False, "error": str(error)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+                return
+            self.send_json(
+                {
+                    "ok": True,
+                    "text": log_text,
+                    "characters": len(log_text),
+                }
+            )
+            return
+
         if parsed.path == "/api/open":
             if self.is_remote_request():
                 self.send_json(
@@ -196,6 +226,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "markdown": "markdown_path",
                 "epub": "epub_path",
                 "log": "log_path",
+                "log-folder": "log_path",
             }
             key = key_map.get(target)
             raw_path = status_payload.get(key, "") if key else ""
@@ -207,6 +238,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_json({"ok": False, "error": "파일을 찾을 수 없습니다."}, 404)
                 return
             command = ["/usr/bin/open", str(path)]
+            if target == "log-folder":
+                command = ["/usr/bin/open", str(path.parent)]
             if target in {"pdf", "markdown", "epub"}:
                 command = ["/usr/bin/open", "-R", str(path)]
             subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
