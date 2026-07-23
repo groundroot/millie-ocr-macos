@@ -8,6 +8,7 @@ INSTALL_DIR="${MILLIE_OCR_INSTALL_DIR:-$HOME/Library/Application Support/MillieO
 DASHBOARD_LABEL="com.millieocr.dashboard"
 DASHBOARD_PLIST="$HOME/Library/LaunchAgents/${DASHBOARD_LABEL}.plist"
 RUNTIME_PYTHON="${MILLIE_OCR_DASHBOARD_PYTHON:-}"
+CODE_ONLY_UPDATE="${MILLIE_OCR_CODE_ONLY_UPDATE:-0}"
 APP_DIR="$HOME/Applications"
 APP_PATH="$APP_DIR/마이북.app"
 LEGACY_APP_PATH="$APP_DIR/밀리 OCR.app"
@@ -30,6 +31,22 @@ if ! "$RUNTIME_PYTHON" -c 'import plistlib'; then
   printf '%s\n' 'The selected Python cannot load its standard plist library.' >&2
   exit 10
 fi
+
+if [[ "$CODE_ONLY_UPDATE" == "1" ]]; then
+  if [[ -d "$APP_PATH" ]]; then
+    PRESERVED_APP_PATH="$APP_PATH"
+  elif [[ -d "$LEGACY_APP_PATH" ]]; then
+    PRESERVED_APP_PATH="$LEGACY_APP_PATH"
+  else
+    printf '%s\n' '설치된 마이북 앱을 찾지 못했습니다. 한 줄 설치 명령을 먼저 실행하세요.' >&2
+    exit 13
+  fi
+  if ! /usr/bin/codesign --verify --deep "$PRESERVED_APP_PATH" >/dev/null 2>&1; then
+    printf '%s\n' '기존 마이북 앱의 서명이 손상되어 코드만 업데이트할 수 없습니다.' >&2
+    exit 11
+  fi
+fi
+
 /bin/mkdir -p "$INSTALL_DIR" "$APP_DIR" "$HOME/Library/Logs" "$HOME/Library/LaunchAgents" "$HOME/.cache/millie-ocr"
 for file in \
   run_millie_ocr.sh \
@@ -51,6 +68,7 @@ for file in \
   setup_remote_dashboard.sh \
   Shortcut_Action.applescript \
   bootstrap_macos.sh \
+  update_code_only.sh \
   uninstall_macos.sh \
   README.md; do
   /usr/bin/ditto "$SOURCE_DIR/$file" "$INSTALL_DIR/$file"
@@ -74,10 +92,44 @@ done
   "$INSTALL_DIR/ocr_progress.py" \
   "$INSTALL_DIR/setup_remote_dashboard.sh" \
   "$INSTALL_DIR/bootstrap_macos.sh" \
+  "$INSTALL_DIR/update_code_only.sh" \
   "$INSTALL_DIR/uninstall_macos.sh"
 
 /usr/bin/osacompile -o "$INSTALL_DIR/millie_native.scpt" "$INSTALL_DIR/millie_native.applescript"
 /usr/bin/osacompile -o "$INSTALL_DIR/Millie_OCR.scpt" "$INSTALL_DIR/Millie_OCR.applescript"
+
+install_dashboard() {
+  "$RUNTIME_PYTHON" "$INSTALL_DIR/install_dashboard_agent.py" \
+    --output "$DASHBOARD_PLIST" \
+    --python "$RUNTIME_PYTHON" \
+    --install-dir "$INSTALL_DIR" \
+    --home "$HOME" \
+    --port 8765
+  local agent_domain="gui/$(/usr/bin/id -u)"
+  if /bin/launchctl print "$agent_domain/$DASHBOARD_LABEL" >/dev/null 2>&1; then
+    /bin/launchctl bootout "$agent_domain/$DASHBOARD_LABEL" >/dev/null 2>&1 || true
+  fi
+  /bin/launchctl bootstrap "$agent_domain" "$DASHBOARD_PLIST"
+  for attempt in {1..20}; do
+    if /usr/bin/curl -fsS --max-time 0.4 http://127.0.0.1:8765/health >/dev/null 2>&1; then
+      return 0
+    fi
+    /bin/sleep 0.1
+  done
+  printf '%s\n' '대시보드 시작을 확인하지 못했습니다.' >&2
+  return 1
+}
+
+if [[ "$CODE_ONLY_UPDATE" == "1" ]]; then
+  install_dashboard
+  printf 'installed=%s\n' "$INSTALL_DIR"
+  printf 'app=%s\n' "$PRESERVED_APP_PATH"
+  printf '%s\n' 'app_action=untouched'
+  printf '%s\n' 'permission_action=preserved'
+  printf '%s\n' 'update_mode=code-only'
+  exit 0
+fi
+
 APP_ACTION="preserved"
 APP_NAME_ACTION="preserved"
 if [[ ! -d "$APP_PATH" && -d "$LEGACY_APP_PATH" ]]; then
@@ -172,25 +224,7 @@ if [[ "${MILLIE_OCR_SKIP_PERMISSION_SETUP:-0}" != "1" && ( "$APP_ACTION" == "reb
   PERMISSION_ACTION="checked"
 fi
 
-if [[ -n "$RUNTIME_PYTHON" && -x "$RUNTIME_PYTHON" ]]; then
-  "$RUNTIME_PYTHON" "$INSTALL_DIR/install_dashboard_agent.py" \
-    --output "$DASHBOARD_PLIST" \
-    --python "$RUNTIME_PYTHON" \
-    --install-dir "$INSTALL_DIR" \
-    --home "$HOME" \
-    --port 8765
-  AGENT_DOMAIN="gui/$(/usr/bin/id -u)"
-  if /bin/launchctl print "$AGENT_DOMAIN/$DASHBOARD_LABEL" >/dev/null 2>&1; then
-    /bin/launchctl bootout "$AGENT_DOMAIN/$DASHBOARD_LABEL" >/dev/null 2>&1 || true
-  fi
-  /bin/launchctl bootstrap "$AGENT_DOMAIN" "$DASHBOARD_PLIST"
-  for attempt in {1..20}; do
-    if /usr/bin/curl -fsS --max-time 0.4 http://127.0.0.1:8765/health >/dev/null 2>&1; then
-      break
-    fi
-    /bin/sleep 0.1
-  done
-fi
+install_dashboard
 printf 'installed=%s\n' "$INSTALL_DIR"
 printf 'app=%s\n' "$APP_PATH"
 printf 'app_action=%s\n' "$APP_ACTION"
