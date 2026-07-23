@@ -1138,6 +1138,160 @@
       .footnote { display: grid; gap: 4px; }
     }
 
+    .header-meta {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 9px;
+      flex-wrap: wrap;
+    }
+
+    .remote-badge {
+      display: none;
+      align-items: center;
+      gap: 7px;
+      padding: 7px 11px;
+      border: 1px solid rgba(52,199,89,.18);
+      border-radius: 999px;
+      color: #18713a;
+      background: rgba(52,199,89,.10);
+      font-size: 10px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .remote-badge::before {
+      content: "";
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #30d158;
+      box-shadow: 0 0 0 3px rgba(48,209,88,.13);
+    }
+
+    body.remote-view .remote-badge { display: inline-flex; }
+    body.remote-view .control-section,
+    body.remote-view .results-section,
+    body.remote-view dialog { display: none; }
+    body.remote-view .rail { grid-template-rows: auto minmax(0, 1fr); }
+
+    @media (min-width: 1200px) and (min-height: 720px) {
+      html, body { height: 100%; overflow: hidden; }
+
+      .shell {
+        width: min(1780px, calc(100% - 56px));
+        height: 100dvh;
+        min-height: 720px;
+        padding: 22px 0 18px;
+        display: grid;
+        grid-template-rows: 82px minmax(0, 1fr) 20px;
+      }
+
+      .masthead {
+        min-height: 0;
+        height: 82px;
+        padding: 7px 14px 15px;
+      }
+
+      .workbench {
+        min-height: 0;
+        height: 100%;
+        margin-top: 0;
+        grid-template-columns: minmax(0, 2.1fr) minmax(410px, .66fr);
+        gap: 18px;
+      }
+
+      .hero {
+        min-height: 0;
+        height: 100%;
+        padding: clamp(40px, 3.1vw, 60px);
+        grid-template-columns: minmax(0, 1fr) 260px;
+        grid-template-rows: minmax(0, 1fr) auto;
+        gap: 34px 48px;
+      }
+
+      .book-title {
+        max-width: 920px;
+        font-size: clamp(48px, 4.4vw, 78px);
+      }
+
+      .message { max-width: 880px; font-size: 17px; }
+      .capture-warning { max-width: 880px; }
+      .folio { padding-left: 44px; }
+      .folio-number { font-size: 88px; }
+      .folio > div:last-child,
+      .progress-track { width: 164px; height: 164px; }
+      .percent { max-width: 122px; font-size: 27px; }
+      .metrics { gap: 12px; }
+
+      .metric,
+      .metric + .metric {
+        min-height: 104px;
+        padding: 18px 20px;
+      }
+
+      .rail {
+        min-height: 0;
+        height: 100%;
+      }
+
+      .rail-section { padding: 20px 24px; }
+      .rail-section:last-child {
+        min-height: 0;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .rail-section:last-child .timeline {
+        min-height: 0;
+        max-height: none;
+      }
+
+      .footnote {
+        align-self: end;
+        margin-top: 0;
+        padding: 4px 12px 0;
+      }
+    }
+
+    @media (max-width: 980px) {
+      html, body { overflow-x: hidden; }
+      .shell { width: min(100% - 24px, 760px); padding: 12px 0 24px; }
+      .masthead { min-height: 70px; padding: 6px 5px 14px; }
+      .workbench { margin-top: 2px; gap: 12px; }
+      .hero { min-height: auto; }
+      .rail { grid-template-rows: auto auto auto auto; }
+      body.remote-view .rail { grid-template-rows: auto auto; }
+      .timeline { max-height: 240px; }
+    }
+
+    @media (max-width: 640px) {
+      .header-meta { gap: 6px; }
+      .remote-badge { padding: 6px 9px; font-size: 9px; }
+      body.remote-view .masthead { align-items: center; }
+      body.remote-view .connection { margin-top: 6px; }
+      .book-title {
+        margin-top: 17px;
+        font-size: clamp(30px, 10.4vw, 45px);
+        word-break: break-word;
+        overflow-wrap: anywhere;
+      }
+      .message { font-size: 14px; overflow-wrap: anywhere; }
+      .folio { gap: 18px; }
+      .folio-number { font-size: 58px; }
+      .folio > div:last-child,
+      .progress-track { width: 104px; height: 104px; }
+      .metrics { grid-template-columns: 1fr; gap: 7px; }
+      .metric,
+      .metric + .metric { min-height: 76px; padding: 12px 10px; }
+      .metric small { font-size: 8px; letter-spacing: .03em; }
+      .metric strong { margin-top: 7px; font-size: 16px; }
+      .rail-section { padding: 19px 18px; }
+      .phase-list { gap: 9px; }
+      .footnote { padding-inline: 5px; }
+    }
+
     @media (prefers-reduced-motion: reduce) {
       .progress-track.indeterminate { animation: none; }
     }
@@ -1161,7 +1315,10 @@
           <div class="connection"><div class="eyebrow"><span id="liveDot" class="live-dot"></span><span id="connectionText">로컬 상태 연결됨</span></div></div>
         </div>
       </div>
-      <div id="clock" class="clock">—</div>
+      <div class="header-meta">
+        <span class="remote-badge">폰 조회 전용</span>
+        <div id="clock" class="clock">—</div>
+      </div>
     </header>
 
     <div class="workbench">
@@ -1202,7 +1359,7 @@
           <div id="phaseList" class="phase-list"></div>
         </section>
 
-        <section class="rail-section">
+        <section class="rail-section control-section">
           <div class="section-head"><h2>작업 제어</h2><span class="eyebrow">CONTROL</span></div>
           <div class="control-stack">
             <button id="stopJob" class="stop-action" type="button" disabled>
@@ -1216,7 +1373,7 @@
           </div>
         </section>
 
-        <section class="rail-section">
+        <section class="rail-section results-section">
           <div class="section-head"><h2>결과 열기</h2></div>
           <div class="actions">
             <button class="action" data-target="folder" disabled><span>결과 폴더</span><small>전체 작업 자료</small></button>
@@ -1235,7 +1392,7 @@
     </div>
 
     <footer class="footnote reveal">
-      <span>이 화면은 이 Mac 안에서만 열립니다 · 1초마다 자동 갱신</span>
+      <span id="accessMode">이 화면은 이 Mac 안에서만 열립니다 · 1초마다 자동 갱신</span>
       <span id="updatedAt">마지막 갱신 —</span>
     </footer>
   </main>
@@ -1282,12 +1439,22 @@
       "all": allPhases.map(([key]) => key)
     };
     const phaseWeights = {preparing: 5, capture: 35, ocr: 45, pdf: 6, markdown: 4, epub: 3, validation: 2, complete: 0};
+    const remoteView = new URLSearchParams(window.location.search).get("view") === "remote"
+      || !["127.0.0.1", "localhost", "::1"].includes(window.location.hostname);
+    const dashboardBase = window.location.pathname.endsWith("/")
+      ? window.location.pathname
+      : `${window.location.pathname}/`;
+    const apiPath = endpoint => `${dashboardBase}api/${endpoint}`.replace(/\/{2,}/g, "/");
     let latestStatus = null;
     let lastFetch = Date.now();
     let stopRequestPending = false;
     let resetRequestPending = false;
 
     const $ = id => document.getElementById(id);
+    document.body.classList.toggle("remote-view", remoteView);
+    $("accessMode").textContent = remoteView
+      ? "암호화된 개인 링크 · 조회 전용 · 1초마다 자동 갱신"
+      : "이 Mac에서만 제어 가능 · 1초마다 자동 갱신";
 
     function parseDate(value) {
       const date = value ? new Date(value) : null;
@@ -1463,12 +1630,14 @@
       const stale = Date.now() - lastFetch > 3500;
       $("liveDot").classList.toggle("stale", stale);
       $("liveDot").classList.toggle("error", latestStatus?.state === "error");
-      $("connectionText").textContent = stale ? "상태 연결 재시도 중" : "로컬 상태 연결됨";
+      $("connectionText").textContent = stale
+        ? "상태 연결 재시도 중"
+        : remoteView ? "Mac 작업 상태 연결됨" : "로컬 상태 연결됨";
     }
 
     async function refresh() {
       try {
-        const response = await fetch("/api/status", {cache: "no-store"});
+        const response = await fetch(apiPath("status"), {cache: "no-store"});
         const payload = await response.json();
         if (!response.ok || !payload.ok) throw new Error(payload.error || "status error");
         lastFetch = Date.now();
@@ -1483,7 +1652,7 @@
       if (button.disabled) return;
       const label = button.querySelector("span").textContent;
       try {
-        const response = await fetch(`/api/open?target=${encodeURIComponent(button.dataset.target)}`);
+        const response = await fetch(`${apiPath("open")}?target=${encodeURIComponent(button.dataset.target)}`);
         const payload = await response.json();
         if (!payload.ok) throw new Error(payload.error || "열 수 없습니다.");
       } catch (error) {
@@ -1501,7 +1670,7 @@
       stopRequestPending = true;
       if (latestStatus) render(latestStatus);
       try {
-        const response = await fetch("/api/stop", {
+        const response = await fetch(apiPath("stop"), {
           method: "POST",
           headers: {"Content-Type": "application/json", "X-Millie-OCR": "stop"},
           body: "{}"
@@ -1525,7 +1694,7 @@
       resetRequestPending = true;
       if (latestStatus) render(latestStatus);
       try {
-        const response = await fetch("/api/reset", {
+        const response = await fetch(apiPath("reset"), {
           method: "POST",
           headers: {"Content-Type": "application/json", "X-Millie-OCR": "reset"},
           body: "{}"

@@ -11,6 +11,15 @@
 
 > 본인이 소유했거나 복제·OCR에 명시적인 허가를 받은 자료에만 사용하세요. 서비스 이용약관과 해당 지역의 저작권법을 확인할 책임은 사용자에게 있습니다.
 
+## 2026-07-23 업데이트
+
+- 터미널에 명령 한 줄만 붙여넣으면 필수 도구, 앱, OCR 엔진, 상태 대시보드까지 순서대로 설치합니다.
+- 같은 명령을 다시 실행하면 `밀리 OCR.app`과 기존 보안 권한은 보존하고 실행 파일만 최신 버전으로 업데이트합니다.
+- 대시보드를 1920 × 1080 화면에 맞게 재구성하고 캡처·OCR·PDF·Markdown·EPUB의 전체 진행률을 실시간으로 표시합니다.
+- 중단된 캡처는 마지막으로 정상 저장된 페이지 다음부터 이어서 실행할 수 있습니다.
+- EPUB에 표지, 본문 이미지와 계층형 목차를 포함하고 Markdown·EPUB에서는 페이지 번호와 페이지 범위 제목을 제거해 문맥을 연결합니다.
+- Tailscale을 선택적으로 연결하면 iPhone에서도 암호화된 조회 전용 화면으로 작업 상황을 확인할 수 있습니다.
+
 ## 한 줄 설치
 
 터미널을 열고 다음 명령을 한 번 실행합니다.
@@ -19,7 +28,15 @@
 /bin/zsh -c "$(curl -fsSL https://raw.githubusercontent.com/groundroot/millie-ocr-macos/main/bootstrap_macos.sh)"
 ```
 
-이 명령은 Homebrew가 없으면 먼저 설치하고, Python·Poppler·llama.cpp·Git을 준비한 뒤 Millie OCR를 설치합니다. Homebrew 설치 중 macOS 관리자 암호를 요청할 수 있습니다.
+이 명령 하나가 다음 작업을 순서대로 진행합니다.
+
+1. Homebrew가 없으면 설치
+2. Python·Poppler·llama.cpp·Git 설치
+3. 최신 Millie OCR 다운로드
+4. `밀리 OCR.app`과 로컬 대시보드 설치
+5. 한글 Surya OCR 전용 실행 환경 설치 및 작동 확인
+
+Homebrew 설치 중 macOS 관리자 암호를 요청할 수 있습니다. 최초 설치는 OCR 패키지를 내려받으므로 시간이 걸릴 수 있으며, 첫 OCR에서는 인식 모델 파일을 추가로 내려받습니다.
 
 처음 설치해 앱을 만들 때만 다음 권한 화면이 순서대로 자동으로 열립니다.
 
@@ -29,7 +46,9 @@
 
 macOS 보안 정책상 설치기가 스위치를 대신 켤 수는 없습니다. 설정 화면 열기, 앱 등록, 승인 확인과 다음 단계 이동은 자동이며 사용자는 `밀리 OCR` 스위치만 직접 켜면 됩니다. 권한 대상은 `밀리의서재`가 아닙니다.
 
-### 보안 권한을 유지하는 업데이트
+설치가 끝나면 Finder에 나타나는 `밀리 OCR.app`을 바로 실행하면 됩니다. 단축어는 필수가 아니며, 원하면 아래 설명대로 앱을 여는 단축어를 추가할 수 있습니다.
+
+### 같은 한 줄로 업데이트
 
 같은 한 줄 설치 명령을 다시 실행하면 기존 `~/Applications/밀리 OCR.app`은 교체하거나 재서명하지 않습니다. 실행 스크립트, OCR 처리기와 대시보드만 업데이트하므로 손쉬운 사용 및 화면 녹화 권한이 유지되고 보안 설정 화면도 다시 열리지 않습니다. 새로 설치되는 앱은 고정 실행기에서 `~/Library/Application Support/MillieOCR/Millie_OCR.scpt`의 최신 동작을 불러오므로 이후 기능 업데이트에도 앱 본체를 바꿀 필요가 없습니다.
 
@@ -48,7 +67,7 @@ MILLIE_OCR_FORCE_APP_REBUILD=1 ./install_local.sh
 
 별도의 화면 제어 앱은 필요하지 않습니다. 페이지 확인과 키 입력은 macOS의 손쉬운 사용 기능으로, 창 캡처는 CoreGraphics로 처리합니다.
 
-## 단축어 만들기
+## 단축어 만들기(선택 사항)
 
 1. macOS **단축어** 앱에서 새 단축어를 만들고 이름을 `밀리 OCR`로 지정합니다.
 2. **앱 열기** 동작을 추가합니다.
@@ -75,7 +94,7 @@ MILLIE_OCR_FORCE_APP_REBUILD=1 ./install_local.sh
 ## 실행 방법
 
 1. 밀리의서재 앱에서 처리할 책을 한 페이지 보기로 엽니다.
-2. 메뉴나 설정 팝업을 닫고 `밀리 OCR` 단축어를 실행합니다.
+2. 메뉴나 설정 팝업을 닫고 `~/Applications/밀리 OCR.app` 또는 기존 `밀리 OCR` 단축어를 실행합니다.
 3. 가장 먼저 나타나는 폴더 선택 창에서 결과를 저장할 위치를 고릅니다.
 4. 결과 선택 창에서 원하는 작업을 하나 고릅니다.
 5. 브라우저에서 열리는 대시보드로 진행률을 확인합니다.
@@ -107,6 +126,22 @@ OCR 단계에서는 완료된 쪽수와 동시에 분석 중인 쪽수를 실시
 
 ```text
 http://127.0.0.1:8765
+```
+
+### iPhone에서 외부 확인
+
+Mac과 iPhone에 Tailscale을 설치하고 같은 계정으로 로그인한 뒤 다음 명령을 한 번 실행합니다.
+
+```bash
+~/Library/Application\ Support/MillieOCR/setup_remote_dashboard.sh
+```
+
+명령이 출력하는 `https://장치이름.개인네트워크.ts.net/millie-ocr/` 주소를 iPhone Safari에서 열면 집 밖에서도 진행 상황을 확인할 수 있습니다. 최초 한 번은 브라우저에서 Tailscale Serve를 승인해야 합니다. 외부 화면은 **조회 전용**이며 작업 중지, 페이지 리셋, Mac 파일 열기 기능은 서버에서도 차단됩니다. 주소는 공개 인터넷이 아니라 같은 Tailscale 네트워크에 로그인한 기기에서만 열립니다. Tailscale Serve 설정은 백그라운드로 유지되므로 Mac을 재시동해도 같은 주소를 계속 사용합니다.
+
+외부 확인을 끄려면 다음 명령을 실행합니다.
+
+```bash
+~/Library/Application\ Support/MillieOCR/setup_remote_dashboard.sh --disable
 ```
 
 작업 중에는 Mac이 잠들거나 화면이 꺼지지 않도록 자동으로 유지합니다. 페이지 이동 전에는 밀리의서재를 다시 전면으로 가져오므로 일시적인 포커스 손실은 재시도하지만, 안전한 캡처를 위해 작업 중 입력은 피하세요.
@@ -216,6 +251,6 @@ OCR 모델 캐시와 사용자가 선택한 결과 폴더는 자동 삭제하지
 
 ```bash
 python3 -m py_compile *.py
-zsh -n run_millie_ocr.sh install_local.sh bootstrap_macos.sh
+zsh -n run_millie_ocr.sh install_local.sh bootstrap_macos.sh setup_remote_dashboard.sh
 osacompile -o /tmp/millie_native.scpt millie_native.applescript
 ```
