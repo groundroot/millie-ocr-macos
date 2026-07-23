@@ -53,10 +53,6 @@ CLOSE_BUTTON = re.compile(
 State = tuple[int, int, str]
 
 
-class CounterUnavailableError(RuntimeError):
-    """The reader is open, but its accessibility tree exposes no page counter."""
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Capture a Millie's Library book at maximum safe speed."
@@ -155,8 +151,10 @@ def state_from_result(result: dict) -> State:
                     current = max(1, int(round(float(slider_match.group(1)))))
                     total = 0
                 else:
-                    raise CounterUnavailableError(
-                        "Reader page counter was not found; close any menu and keep one page visible"
+                    raise RuntimeError(
+                        "페이지 번호를 찾지 못했습니다. 밀리의서재 뷰어 설정에서 "
+                        "'가로 보기'를 선택하고 한 쪽씩 보이게 한 뒤 다시 실행해 주세요. "
+                        "스크롤 모드는 지원하지 않습니다."
                     )
     if current < 1 or (total > 0 and total < current):
         raise RuntimeError(
@@ -281,11 +279,20 @@ def get_state(args: argparse.Namespace, restore: bool = False) -> State:
                 diagnostic_note = (
                     f"; diagnostic={diagnostic_path}" if diagnostic_path else ""
                 )
-                raise CounterUnavailableError(
-                    "Reader page counter did not become available within "
-                    f"{args.reader_ready_seconds:.1f}s; close menus and keep the book open "
-                    f"in one-page mode (last error: {last_error}){diagnostic_note}"
-                ) from error
+                message = (
+                    "페이지 번호를 확인하지 못해 캡처를 시작하지 않았습니다. "
+                    "밀리의서재 뷰어 설정에서 '가로 보기'를 선택하고 한 쪽씩 보이게 한 뒤 "
+                    "다시 실행해 주세요. 스크롤 모드는 지원하지 않습니다."
+                )
+                if args.status_file:
+                    update_status(
+                        args.status_file.expanduser(),
+                        state="error",
+                        phase="preparing",
+                        message="가로 보기 설정이 필요합니다.",
+                        error=f"{message}{diagnostic_note}",
+                    )
+                raise RuntimeError(f"{message}{diagnostic_note}") from error
             time.sleep(max(args.retry_seconds, 0.15))
 
 
@@ -454,23 +461,6 @@ def image_hash(path: Path) -> str:
     return digest.hexdigest()
 
 
-def page_content_hash(path: Path) -> str:
-    """Hash the stable page body while ignoring reader chrome near the edges."""
-    with Image.open(path) as opened:
-        image = opened.convert("L")
-        width, height = image.size
-        left = max(0, round(width * 0.04))
-        top = max(0, round(height * 0.08))
-        right = min(width, round(width * 0.96))
-        bottom = min(height, round(height * 0.92))
-        if right <= left or bottom <= top:
-            raise RuntimeError("Reader screenshot is too small for page comparison")
-        body = image.crop((left, top, right, bottom)).resize(
-            (96, 128), Image.Resampling.BILINEAR
-        )
-        return hashlib.sha256(body.tobytes()).hexdigest()
-
-
 def capture_raw(args: argparse.Namespace, destination: Path) -> State | None:
     destination.unlink(missing_ok=True)
     completed = subprocess.run(
@@ -499,67 +489,6 @@ def capture_raw(args: argparse.Namespace, destination: Path) -> State | None:
         "밀리의서재 창을 캡처하지 못했습니다. 시스템 설정 > 개인정보 보호 및 보안 > "
         "화면 및 시스템 오디오 녹음에서 '마이북' 또는 '단축어'를 허용해 주세요."
     )
-
-
-def wait_for_visual_transition(
-    args: argparse.Namespace, raw_path: Path, previous_hash: str
-) -> str | None:
-    for attempt in range(args.max_refreshes):
-        capture_raw(args, raw_path)
-        observed_hash = page_content_hash(raw_path)
-        if observed_hash != previous_hash:
-            return observed_hash
-        if attempt + 1 < args.max_refreshes:
-            time.sleep(max(args.retry_seconds, 0.02))
-    return None
-
-
-def navigate_reader_without_counter(
-    args: argparse.Namespace, target_page: int, title: str
-) -> State:
-    """Reach page 1, then a resume target using verified page-body changes."""
-    close_table_of_contents(args)
-    focus_reader(args)
-    if args.cg_window_id is None:
-        args.cg_window_id = resolve_cg_window_id(args.app_pid) if args.app_pid else None
-    if args.cg_window_id is None:
-        raise RuntimeError("밀리의서재의 화면 캡처 창 번호를 확인하지 못했습니다.")
-
-    with tempfile.TemporaryDirectory(prefix="mybook-counterless-nav-") as temporary:
-        raw_path = Path(temporary) / f"navigation.{args.raw_format}"
-        capture_raw(args, raw_path)
-        current_hash = page_content_hash(raw_path)
-        rewind_steps = 0
-        while True:
-            press_key_fast(args, "Left")
-            changed_hash = wait_for_visual_transition(args, raw_path, current_hash)
-            if changed_hash is None:
-                break
-            current_hash = changed_hash
-            rewind_steps += 1
-            if rewind_steps > 10000:
-                raise RuntimeError("무카운터 탐색이 안전 한도를 초과했습니다.")
-            if rewind_steps <= 3 or rewind_steps % 10 == 0:
-                print(f"counterless_rewind_steps={rewind_steps}", flush=True)
-
-        for page in range(2, target_page + 1):
-            press_key_fast(args, "Right")
-            changed_hash = wait_for_visual_transition(args, raw_path, current_hash)
-            if changed_hash is None:
-                raise RuntimeError(
-                    f"무카운터 이어서 탐색 중 {page}번째 화면으로 이동하지 못했습니다."
-                )
-            current_hash = changed_hash
-            if page == target_page or page % 10 == 0:
-                print(f"counterless_resume_seek={page}", flush=True)
-
-    print(
-        f"counterless_navigation=ready rewind_steps={rewind_steps} target={target_page}",
-        flush=True,
-    )
-    return target_page, 0, title
-
-
 def capture_distinct_raw(
     args: argparse.Namespace,
     raw_path: Path,
@@ -567,7 +496,6 @@ def capture_distinct_raw(
     expected_total: int | None,
     previous_raw_hash: str | None,
     allow_final_page: bool = False,
-    counter_available: bool = True,
 ) -> str | None:
     last_hash = None
     redeliveries = 0
@@ -582,35 +510,12 @@ def capture_distinct_raw(
                     f"Unexpected reader counter during capture: {current}/{total or '?'}; "
                     f"expected {expected_page}/{expected_total or '?'}"
                 )
-        last_hash = (
-            image_hash(raw_path)
-            if counter_available
-            else page_content_hash(raw_path)
-        )
+        last_hash = image_hash(raw_path)
         if previous_raw_hash is None or last_hash != previous_raw_hash:
             return last_hash
 
         if attempt < 1:
             time.sleep(args.retry_seconds)
-            continue
-
-        if not counter_available:
-            redelivery_attempt = max(2, args.max_refreshes // 2)
-            if attempt == redelivery_attempt:
-                press_key_fast(args, "Right")
-                redeliveries += 1
-            if attempt + 1 >= args.max_refreshes:
-                if allow_final_page:
-                    print(
-                        f"final_page_detected={expected_page - 1} "
-                        f"visual_stalls={redeliveries + 1}",
-                        flush=True,
-                    )
-                    return None
-                raise RuntimeError(
-                    f"Page {expected_page} did not produce a distinct page-body image"
-                )
-            time.sleep(max(args.retry_seconds, 0.02))
             continue
 
         current, total, _ = get_state(args)
@@ -793,35 +698,21 @@ def main() -> None:
     navigation_target = args.start_page
     if args.expected_total and navigation_target > args.expected_total:
         navigation_target = args.expected_total
-    counter_available = True
-    try:
-        state = (
-            rewind_and_warm_reader(args)
-            if args.start_page == 1
-            else move_reader_to_page(args, navigation_target)
-        )
-    except CounterUnavailableError as error:
-        counter_available = False
-        probe = run_native(args, "focus")
-        title = probe.get("snapshot", {}).get("window", {}).get("title", "")
-        args.cg_window_id = args.cg_window_id or (
-            resolve_cg_window_id(args.app_pid) if args.app_pid else None
-        )
-        state = navigate_reader_without_counter(args, navigation_target, title)
-        print(f"counterless_fallback={error}", flush=True)
+    state = (
+        rewind_and_warm_reader(args)
+        if args.start_page == 1
+        else move_reader_to_page(args, navigation_target)
+    )
     args.cg_window_id = args.cg_window_id or (
         resolve_cg_window_id(args.app_pid) if args.app_pid else None
     )
     if args.cg_window_id is None:
         raise RuntimeError("밀리의서재의 화면 캡처 창 번호를 확인하지 못했습니다.")
-    if not counter_available:
-        audit_mode = "verified-page-body-changes"
-    else:
-        audit_mode = (
-            f"verified-burst-{args.counter_audit_interval}"
-            if args.counter_audit_interval > 0
-            else "adaptive-anomaly-checks"
-        )
+    audit_mode = (
+        f"verified-burst-{args.counter_audit_interval}"
+        if args.counter_audit_interval > 0
+        else "adaptive-anomaly-checks"
+    )
     print(
         f"app_pid={args.app_pid} core_graphics_window={args.cg_window_id} "
         f"capture_backend=core-graphics-fast accessibility={audit_mode}",
@@ -891,11 +782,7 @@ def main() -> None:
         "end_page": end_page,
         "total_pages": known_total,
         "target_size": [args.target_width, args.target_height],
-        "capture_mode": (
-            "core-graphics-counterless-page-body"
-            if not counter_available
-            else "core-graphics-verified-burst"
-        ),
+        "capture_mode": "core-graphics-verified-burst",
         "counter_audit_interval": max(0, args.counter_audit_interval),
         "status_interval": max(0.05, args.status_interval),
         "pages": [],
@@ -920,7 +807,7 @@ def main() -> None:
             page = args.start_page
             while end_page is None or page <= end_page:
                 audit_interval = max(0, args.counter_audit_interval)
-                if counter_available and audit_interval > 0 and page > 1 and page % audit_interval == 0:
+                if audit_interval > 0 and page > 1 and page % audit_interval == 0:
                     # Verify the reader reached this page before taking its image.
                     # This prevents a late page turn from being saved under the
                     # next page number at a burst boundary.
@@ -935,7 +822,6 @@ def main() -> None:
                     known_total,
                     previous_raw_hash,
                     allow_final_page=known_total is None and page > 1,
-                    counter_available=counter_available,
                 )
                 if captured_hash is None:
                     end_page = page - 1
@@ -1003,8 +889,7 @@ def main() -> None:
 
             if end_page is None:
                 raise RuntimeError("Capture ended without determining the final page")
-            if counter_available:
-                audit_counter(args, end_page, known_total)
+            audit_counter(args, end_page, known_total)
             for page in range(1, end_page + 1):
                 page_hash = (
                     completed_hashes[page]

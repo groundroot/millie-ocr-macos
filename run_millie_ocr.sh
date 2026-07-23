@@ -188,14 +188,26 @@ stop_requested() {
 
 fail() {
   local exit_code=$?
+  local existing_state=""
+  local existing_message=""
   if [[ -f "$STOP_REQUEST_FILE" ]]; then
     stop_requested
   fi
-  status_update \
-    --state error \
-    --message "작업이 중단되었습니다. 실행 기록에서 원인을 확인해 주세요." \
+  existing_state="$("$RUNTIME_PYTHON" -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("state", ""))' "$STATUS_FILE" 2>/dev/null || true)"
+  if [[ "$existing_state" != "error" ]]; then
+    status_update \
+      --state error \
+      --message "작업이 중단되었습니다. 실행 기록에서 원인을 확인해 주세요." \
     --error "종료 코드 ${exit_code} · ${SHORTCUT_LOG}"
-  notify "작업이 중단됐습니다. 마이북 로그를 확인해 주세요."
+    notify "작업이 중단됐습니다. 마이북 로그를 확인해 주세요."
+  else
+    existing_message="$("$RUNTIME_PYTHON" -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("message", ""))' "$STATUS_FILE" 2>/dev/null || true)"
+    if [[ "$existing_message" == "가로 보기 설정이 필요합니다." ]]; then
+      notify "밀리의서재를 가로 보기로 설정한 뒤 다시 실행해 주세요."
+    else
+      notify "작업이 중단됐습니다. 대시보드에서 원인을 확인해 주세요."
+    fi
+  fi
   exit "$exit_code"
 }
 

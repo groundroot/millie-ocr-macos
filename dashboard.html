@@ -19,6 +19,9 @@
       --yellow: #b87b1e;
       --warning-surface: #fff3d6;
       --warning-ink: #6d4300;
+      --critical-surface: #fff0ef;
+      --critical-border: rgba(255, 59, 48, .38);
+      --critical-ink: #b42318;
       --shadow: 0 24px 80px rgba(61, 49, 31, .13);
       --serif: "AppleMyungjo", "Nanum Myeongjo", serif;
       --sans: "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
@@ -213,6 +216,40 @@
     }
 
     .capture-warning span {
+      display: block;
+      margin-top: 4px;
+      font-size: 13px;
+      line-height: 1.55;
+      word-break: keep-all;
+    }
+
+    .reader-mode-warning {
+      display: flex;
+      align-items: flex-start;
+      gap: 14px;
+      margin-top: 20px;
+      padding: 16px 18px;
+      border: 1px solid var(--critical-border);
+      background: var(--critical-surface);
+      color: var(--critical-ink);
+      position: relative;
+      z-index: 2;
+    }
+
+    .reader-mode-warning svg {
+      flex: 0 0 auto;
+      width: 24px;
+      height: 24px;
+      stroke: currentColor;
+    }
+
+    .reader-mode-warning strong {
+      display: block;
+      font-size: 15px;
+      line-height: 1.35;
+    }
+
+    .reader-mode-warning span {
       display: block;
       margin-top: 4px;
       font-size: 13px;
@@ -618,6 +655,9 @@
       --yellow: #b25000;
       --warning-surface: rgba(255, 159, 10, .12);
       --warning-ink: #8a4b00;
+      --critical-surface: rgba(255, 59, 48, .10);
+      --critical-border: rgba(255, 59, 48, .28);
+      --critical-ink: #c5221f;
       --material: rgba(255, 255, 255, .66);
       --material-strong: rgba(255, 255, 255, .90);
       --track: rgba(60, 60, 67, .12);
@@ -811,6 +851,17 @@
     .capture-warning svg { width: 21px; height: 21px; }
     .capture-warning strong { font-size: 14px; }
     .capture-warning span { margin-top: 3px; font-size: 12px; }
+
+    .reader-mode-warning {
+      max-width: 650px;
+      margin-top: 18px;
+      padding: 15px 16px;
+      border-radius: 16px;
+    }
+
+    .reader-mode-warning svg { width: 21px; height: 21px; }
+    .reader-mode-warning strong { font-size: 14px; }
+    .reader-mode-warning span { margin-top: 3px; font-size: 12px; }
 
     .folio {
       grid-column: 2;
@@ -1230,6 +1281,7 @@
 
       .message { max-width: 880px; font-size: 17px; }
       .capture-warning { max-width: 880px; }
+      .reader-mode-warning { max-width: 880px; }
       .folio { padding-left: 44px; }
       .folio-number { font-size: 88px; }
       .folio > div:last-child,
@@ -1340,6 +1392,10 @@
           <div id="phaseLabel" class="phase-label">대기</div>
           <div id="bookTitle" class="book-title">새 책을 기다리는 중</div>
           <p id="message" class="message" aria-live="polite">‘마이북’을 실행하면 이 화면에서 진행 상황을 바로 확인할 수 있습니다.</p>
+          <div class="reader-mode-warning" role="alert">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3 2.8 19h18.4L12 3Z" stroke-width="1.8" stroke-linejoin="round"/><path d="M12 8v5" stroke-width="1.8" stroke-linecap="round"/><path d="M12 16.7h.01" stroke-width="2.4" stroke-linecap="round"/></svg>
+            <div><strong>밀리의서재를 반드시 가로 보기로 설정하세요</strong><span>스크롤 모드는 지원하지 않습니다. 뷰어 설정에서 가로 보기를 선택하고 한 쪽씩 보이게 해야 캡처가 시작됩니다.</span></div>
+          </div>
           <div id="captureWarning" class="capture-warning" role="status" aria-live="polite">
             <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3 2.8 19h18.4L12 3Z" stroke-width="1.8" stroke-linejoin="round"/><path d="M12 8v5" stroke-width="1.8" stroke-linecap="round"/><path d="M12 16.7h.01" stroke-width="2.4" stroke-linecap="round"/></svg>
             <div><strong>캡처 중에는 Mac을 조작하지 마세요</strong><span>마우스·키보드 입력이나 다른 앱 전환은 페이지 이동을 방해할 수 있습니다. 캡처가 끝나면 이 안내는 자동으로 사라집니다.</span></div>
