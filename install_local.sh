@@ -51,6 +51,7 @@ for file in \
   setup_remote_dashboard.sh \
   Shortcut_Action.applescript \
   bootstrap_macos.sh \
+  uninstall_macos.sh \
   README.md; do
   /usr/bin/ditto "$SOURCE_DIR/$file" "$INSTALL_DIR/$file"
 done
@@ -72,7 +73,8 @@ done
   "$INSTALL_DIR/make_image_pdf.py" \
   "$INSTALL_DIR/ocr_progress.py" \
   "$INSTALL_DIR/setup_remote_dashboard.sh" \
-  "$INSTALL_DIR/bootstrap_macos.sh"
+  "$INSTALL_DIR/bootstrap_macos.sh" \
+  "$INSTALL_DIR/uninstall_macos.sh"
 
 /usr/bin/osacompile -o "$INSTALL_DIR/millie_native.scpt" "$INSTALL_DIR/millie_native.applescript"
 /usr/bin/osacompile -o "$INSTALL_DIR/Millie_OCR.scpt" "$INSTALL_DIR/Millie_OCR.applescript"
